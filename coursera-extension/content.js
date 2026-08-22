@@ -550,6 +550,24 @@
       attempts++;
       await new Promise(r => setTimeout(r, 800));
     }
+
+    // Guard against infinite loop: If nothing found after 8 polling attempts, advance to next quiz
+    console.warn('[Auto-Cert Auto-Pilot] No questions or start button found, advancing to next item...');
+    state.currentIndex++;
+    if (state.currentIndex < state.quizUrls.length) {
+      await setAutoPilotState(state);
+      const nextUrl = state.quizUrls[state.currentIndex];
+      if (nextUrl !== window.location.href) {
+        window.location.href = nextUrl;
+      }
+    } else {
+      state.active = false;
+      await setAutoPilotState(state);
+      showToast('🎉 [Auto-Pilot] ดำเนินการครบทุกชุดแล้ว');
+      if (state.moduleUrl && state.moduleUrl !== window.location.href) {
+        window.location.href = state.moduleUrl;
+      }
+    }
   }
 
   // Start Full Auto-Pilot from Module Home
@@ -952,22 +970,24 @@
     const questionItems = await harvestAllQuestionsProgressive();
 
     if (questionItems.length === 0) {
-      const quizLinks = findModuleQuizLinks();
-      if (quizLinks.length > 0) {
-        showToast(`🚀 ตรวจพบข้อสอบใน Module นี้ ${quizLinks.length} ชุด! เริ่ม Auto-Pilot ทันที...`);
-        const state = {
-          active: true,
-          moduleUrl: window.location.href,
-          quizUrls: quizLinks,
-          currentIndex: 0
-        };
-        await setAutoPilotState(state);
-        await stealthEngine.wait(1500);
-        window.location.href = quizLinks[0];
-        return { success: true, count: 0, autoPilot: true };
+      // 1. Check if Start / Resume button is present on splash page
+      const startBtn = findStartResumeButton();
+      if (startBtn) {
+        showToast('🚀 กำลังกดเริ่มทำข้อสอบ (Start/Resume)...');
+        await stealthEngine.simulateHumanClick(startBtn);
+        return { success: true, splash: true };
       }
 
-      showToast('⚠️ ไม่พบโจทย์ข้อสอบในหน้านี้');
+      // 2. Check if on assignment landing page without /attempt
+      const currentPath = window.location.pathname;
+      if (currentPath.includes('/assignment-submission/') && !currentPath.includes('/attempt')) {
+        showToast('🚀 กำลังเข้าสู่หน้าข้อสอบ (/attempt)...');
+        const cleanPath = currentPath.replace(/\/$/, '') + '/attempt';
+        window.location.href = window.location.origin + cleanPath;
+        return { success: true, redirecting: true };
+      }
+
+      showToast('⚠️ ไม่พบโจทย์ข้อสอบในหน้านี้ (หากอยู่หน้า Module รวม ให้กดปุ่มเขียว Auto-Pilot)');
       return { success: false, error: 'No questions found' };
     }
 
