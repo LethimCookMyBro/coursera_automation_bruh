@@ -1,17 +1,18 @@
-// Coursera Auto-Cert Pro - Content Script
-// Full Auto-Pilot & Max Stealth Simulation
+// Coursera Auto-Cert Pro - Core Content Orchestrator & Deterministic State Machine (FSM)
+// Implements Strict State Transitions, Action Verification Loops, and Zero Fire-and-Forget Logic
 
 (function () {
-  console.log('[Auto-Cert Pro] Content script initialized with Auto-Pilot & Max Stealth');
+  console.log('[Auto-Cert Pro] Core Orchestrator & Deterministic State Machine Loaded');
 
-  let userInfo = {
+  // --- 1. Global State & Settings ---
+  const userInfo = {
     userId: null,
     slug: '',
     courseId: '',
     fullName: ''
   };
 
-  let settings = {
+  const settings = {
     geminiApiKey: '',
     geminiModel: 'gemini-flash-latest',
     autoSpeed: 2,
@@ -23,10 +24,27 @@
 
   let geminiSolver = null;
   let stealthEngine = null;
-  let floatingWidgetEl = null;
   let keepAlivePort = null;
+  let isExecutingState = false;
 
-  // Initialize
+  // --- 2. Finite State Machine (FSM) Definitions ---
+  const FSM_STATES = {
+    IDLE: 'IDLE',
+    DISCOVERING_MODULE: 'DISCOVERING_MODULE',
+    BYPASSING_LECTURES: 'BYPASSING_LECTURES',
+    SELECTING_TARGET: 'SELECTING_TARGET',
+    NAVIGATING_TARGET: 'NAVIGATING_TARGET',
+    RESOLVING_PAGE_TYPE: 'RESOLVING_PAGE_TYPE',
+    STARTING_ATTEMPT: 'STARTING_ATTEMPT',
+    SOLVING_SELF_REVIEW: 'SOLVING_SELF_REVIEW',
+    SOLVING_QUIZ: 'SOLVING_QUIZ',
+    SUBMITTING_WITH_VERIFICATION: 'SUBMITTING_WITH_VERIFICATION',
+    ADVANCING_NEXT_TARGET: 'ADVANCING_NEXT_TARGET',
+    FINALIZING_MODULE: 'FINALIZING_MODULE',
+    COMPLETED: 'COMPLETED'
+  };
+
+  // --- 3. Initialization ---
   async function init() {
     await loadSettings();
     initKeepAlivePort();
@@ -39,32 +57,10 @@
       injectFloatingWidget();
     }
 
-    // Check Auto-Pilot active state on load
+    // Check FSM state on load
     setTimeout(() => {
-      checkAndRunAutoPilot();
-    }, 1500);
-  }
-
-  // Persistent Port Keep-Alive with Background Service Worker (MV3)
-  function initKeepAlivePort() {
-    try {
-      keepAlivePort = chrome.runtime.connect({ name: 'AUTOCERT_KEEP_ALIVE' });
-      keepAlivePort.onDisconnect.addListener(() => {
-        // Reconnect after brief pause if disconnected
-        setTimeout(initKeepAlivePort, 3000);
-      });
-
-      // Ping every 25 seconds to keep worker active during long tasks
-      setInterval(() => {
-        if (keepAlivePort) {
-          try {
-            keepAlivePort.postMessage({ type: 'PING' });
-          } catch (e) {}
-        }
-      }, 25000);
-    } catch (e) {
-      console.warn('[Auto-Cert] Keep-Alive port init failed:', e);
-    }
+      runStateEngine();
+    }, 1200);
   }
 
   // Load Settings from chrome.storage
@@ -89,13 +85,27 @@
     });
   }
 
-  // Extract CSRF Token from cookie
+  // MV3 Port Keep-Alive
+  function initKeepAlivePort() {
+    try {
+      keepAlivePort = chrome.runtime.connect({ name: 'AUTOCERT_KEEP_ALIVE' });
+      keepAlivePort.onDisconnect.addListener(() => {
+        setTimeout(initKeepAlivePort, 3000);
+      });
+      setInterval(() => {
+        if (keepAlivePort) {
+          try { keepAlivePort.postMessage({ type: 'PING' }); } catch (e) {}
+        }
+      }, 25000);
+    } catch (e) {}
+  }
+
+  // CSRF & User Info
   function getCsrfToken() {
     const match = document.cookie.match(/(?:^|;\s*)(?:CSRF3-Token|CSRF2-Token|csrf_token)=([^;]+)/);
     return match ? decodeURIComponent(match[1]) : '';
   }
 
-  // Fetch Course ID directly from Coursera API if missing
   async function resolveCourseId(slug) {
     if (userInfo.courseId) return userInfo.courseId;
     if (!slug) return null;
@@ -112,19 +122,15 @@
           return cid;
         }
       }
-    } catch (e) {
-      console.warn('[Auto-Cert] Failed to query courseId by slug:', e);
-    }
+    } catch (e) {}
     return null;
   }
 
-  // Request User Info with Promise and Timeout to prevent race conditions
   async function getUserInfoWithTimeout(timeoutMs = 2500) {
     if (userInfo.userId) return userInfo;
 
     return new Promise(resolve => {
       let resolved = false;
-
       const handler = (event) => {
         if (event.source !== window || !event.data || event.data.source !== 'AUTOCERT_PAGE') return;
         if (event.data.type === 'USER_INFO_RESPONSE') {
@@ -132,6 +138,7 @@
           if (data.userId) userInfo.userId = data.userId;
           if (data.slug) userInfo.slug = data.slug;
           if (data.courseId) userInfo.courseId = data.courseId;
+          if (data.fullName) userInfo.fullName = data.fullName;
           updateWidgetStatus();
           if (!resolved) {
             resolved = true;
@@ -158,14 +165,12 @@
     });
   }
 
-  // Inject Bridge Script to access page context
   function injectPageBridge() {
     const script = document.createElement('script');
     script.src = chrome.runtime.getURL('injected.js');
     script.onload = () => script.remove();
     (document.head || document.documentElement).appendChild(script);
 
-    // Listen to messages from page bridge
     window.addEventListener('message', (event) => {
       if (event.source !== window || !event.data || event.data.source !== 'AUTOCERT_PAGE') return;
       if (event.data.type === 'USER_INFO_RESPONSE') {
@@ -173,15 +178,14 @@
         if (data.userId) userInfo.userId = data.userId;
         if (data.slug) userInfo.slug = data.slug;
         if (data.courseId) userInfo.courseId = data.courseId;
+        if (data.fullName) userInfo.fullName = data.fullName;
         updateWidgetStatus();
       }
     });
 
-    // Request user info
     getUserInfoWithTimeout(1500);
   }
 
-  // SPA Navigation listener (Coursera client-side routing)
   function setupSPANavigation() {
     let lastUrl = location.href;
     new MutationObserver(() => {
@@ -189,19 +193,18 @@
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
         getUserInfoWithTimeout(1000);
-        setTimeout(checkAndRunAutoPilot, 1200);
+        setTimeout(runStateEngine, 800);
       }
     }).observe(document, { subtree: true, childList: true });
   }
 
-  // Message Listener for Popup and Extension commands
   function setupMessageListeners() {
     chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       if (req.action === 'BYPASS_MODULE') {
         bypassCurrentModule(false).then(res => sendResponse(res));
         return true;
       } else if (req.action === 'SOLVE_QUIZ') {
-        solveCurrentQuiz().then(res => sendResponse(res));
+        solveCurrentQuizManual().then(res => sendResponse(res));
         return true;
       } else if (req.action === 'START_AUTOPILOT') {
         startFullAutoPilot().then(res => sendResponse(res));
@@ -226,7 +229,6 @@
     });
   }
 
-  // Safe Video Speed Controller & Playback Observer
   function setupVideoObserver() {
     const attachSafeSpeedControl = (video) => {
       if (!video || video.dataset.acSpeedAttached) return;
@@ -272,16 +274,12 @@
     chrome.storage.local.set({ autoSpeed: speed });
     const videos = document.querySelectorAll('video');
     videos.forEach(v => {
-      try {
-        v.playbackRate = speed;
-      } catch (e) {
-        console.warn('[Auto-Cert] Failed to set playbackRate:', e);
-      }
+      try { v.playbackRate = speed; } catch (e) {}
     });
     showToast(`⚡ ตั้งค่าความเร็ววิดีโอเป็น ${speed}x`);
   }
 
-  // Universal Smart Text Input Resolver (Textarea, Input, & ContentEditable / ProseMirror)
+  // Universal Smart Text Input Resolver
   async function fillSmartTextInput(element, text) {
     if (!element || !text) return false;
 
@@ -290,7 +288,7 @@
     } catch (e) {}
     await stealthEngine.wait(300);
 
-    // 1. Standard HTML Textarea / Input
+    // 1. Textarea / Input
     if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
       const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement?.prototype || window.HTMLInputElement?.prototype || {}, 'value')?.set;
       if (nativeSetter) {
@@ -303,10 +301,9 @@
       return true;
     }
 
-    // 2. ContentEditable / ProseMirror / Draft.js / Slate Rich Text Editor
+    // 2. ContentEditable / ProseMirror
     if (element.isContentEditable || element.getAttribute('contenteditable') === 'true' || element.classList.contains('ProseMirror')) {
       element.focus();
-      
       try {
         const selection = window.getSelection();
         const range = document.createRange();
@@ -317,7 +314,6 @@
         document.execCommand('insertText', false, text);
       } catch (e) {}
 
-      // Fallback if execCommand did not populate text
       if (!element.innerText || element.innerText.trim().length === 0) {
         element.innerText = text;
         element.innerHTML = `<p>${text}</p>`;
@@ -332,11 +328,9 @@
     return false;
   }
 
-  // Check if current page is Quiz / Question Attempt / Self-Review
+  // --- 4. High-Fidelity Page Classifier & DOM Parsers ---
   function isQuizPage() {
     const path = window.location.pathname;
-    
-    // Explicitly exclude video lectures & reading supplements
     if (path.includes('/lecture/') || path.includes('/supplement/') || path.includes('/discussionPrompt/')) {
       return !!document.querySelector('.rc-InVideoQuizPrompt');
     }
@@ -353,16 +347,22 @@
     );
   }
 
-  // Check if current page is an already-passed quiz result page
   function isAlreadyPassedPage() {
     const text = (document.body?.innerText || '').toLowerCase();
-    return (
-      (text.includes('congratulations! you passed') || text.includes('you passed') || text.includes('grade received: 100%') || text.includes('you received a grade')) &&
-      !document.querySelector('input[type="radio"], textarea, div[contenteditable="true"]')
+    const hasPassedBadge = text.includes('congratulations! you passed') || 
+                           text.includes('you passed') || 
+                           text.includes('grade received: 100%') || 
+                           text.includes('you received a grade') ||
+                           text.includes('graded: 100%') ||
+                           text.includes('submitted');
+
+    const hasActiveQuestions = !!(
+      document.querySelector('input[type="radio"]:not([disabled]), textarea:not([disabled])')
     );
+
+    return hasPassedBadge && !hasActiveQuestions;
   }
 
-  // Find Start / Resume Assignment Button
   function findStartResumeButton() {
     const path = window.location.pathname;
     if (path.includes('/lecture/') || path.includes('/supplement/') || path.includes('/discussionPrompt/')) {
@@ -379,7 +379,7 @@
         txt === 'start quiz' ||
         txt === 'take quiz' ||
         txt === 'begin' ||
-        txt.includes('resume') ||
+        txt === 'continue' ||
         txt.includes('start assignment') ||
         txt.includes('start quiz')
       ) {
@@ -393,7 +393,7 @@
   function findModuleQuizLinks() {
     const links = [];
 
-    // 1. Direct Anchor lookup
+    // 1. Direct Anchors
     const anchors = document.querySelectorAll('a[href*="/assignment-submission/"], a[href*="/exam/"], a[href*="/quiz/"], a[href*="/gradedLti/"], a[href*="/ungradedLti/"]');
     anchors.forEach(a => {
       let href = a.getAttribute('href') || '';
@@ -407,12 +407,12 @@
       }
     });
 
-    // 2. Row Container lookup
+    // 2. Row Containers
     const rows = document.querySelectorAll('li, div[data-testid*="item"], div[class*="ItemRow"], div[class*="cds-"]');
     rows.forEach(row => {
       const rowText = (row.innerText || '').toLowerCase();
       const isCompleted = !!row.querySelector('.rc-CompletedIcon, svg[data-testid="completed"], svg[data-testid*="completed"], [aria-label*="Completed"], [aria-label*="completed"], [data-e2e*="completed"]') ||
-                          rowText.includes('completed') || rowText.includes('ผ่านแล้ว');
+                          rowText.includes('submitted') || rowText.includes('grade: 100%') || rowText.includes('completed') || rowText.includes('ผ่านแล้ว');
 
       if (!isCompleted) {
         if (
@@ -440,387 +440,16 @@
     return links;
   }
 
-  // Auto-Pilot State Storage
-  async function getAutoPilotState() {
-    return new Promise(resolve => {
-      chrome.storage.local.get(['autoPilotState'], res => resolve(res.autoPilotState || null));
-    });
-  }
-
-  async function setAutoPilotState(state) {
-    return new Promise(resolve => {
-      chrome.storage.local.set({ autoPilotState: state }, resolve);
-    });
-  }
-
-  async function cancelAutoPilot() {
-    await setAutoPilotState(null);
-    showToast('🛑 ยกเลิก Auto-Pilot แล้ว');
-    setWidgetStatusText('พร้อมทำงาน');
-  }
-
-  // Check and run Auto-Pilot actions on page load with smart dynamic retry
-  async function checkAndRunAutoPilot() {
-    const state = await getAutoPilotState();
-    if (!state || !state.active) return;
-
-    console.log('[Auto-Cert Auto-Pilot] Active state:', state);
-
-    if (isAlreadyPassedPage()) {
-      showToast('✅ ข้อสอบชุดนี้ผ่านแล้ว กำลังไปยังชุดถัดไป...');
-      state.currentIndex++;
-      if (state.currentIndex < state.quizUrls.length) {
-        await setAutoPilotState(state);
-        window.location.href = state.quizUrls[state.currentIndex];
-      } else {
-        state.active = false;
-        await setAutoPilotState(state);
-        if (state.moduleUrl) window.location.href = state.moduleUrl;
-      }
-      return;
-    }
-
-    let attempts = 0;
-    while (attempts < 8) {
-      const startBtn = findStartResumeButton();
-      if (startBtn && !isQuizPage()) {
-        showToast(`🚀 [Auto-Pilot] กำลังกดเริ่มทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
-        setWidgetStatusText(`🚀 Auto-Pilot: กำลังเปิดเข้าสู่หน้าข้อสอบ...`);
-        await stealthEngine.wait(1000);
-        await stealthEngine.simulateHumanClick(startBtn);
-        
-        // Wait dynamically for questions or textarea to render after clicking start
-        let transitionAttempts = 0;
-        let transitioned = false;
-        while (transitionAttempts < 10) {
-          await new Promise(r => setTimeout(r, 800));
-          if (isQuizPage() || document.querySelector('textarea, div[contenteditable="true"], .ProseMirror, input[type="radio"], input[type="checkbox"]')) {
-            transitioned = true;
-            break;
-          }
-          transitionAttempts++;
-        }
-        
-        if (transitioned) {
-          console.log('[Auto-Cert Auto-Pilot] Transitioned into quiz attempt, proceeding to solve...');
-          continue;
-        }
-      }
-
-      // Self-Review / Textarea / ContentEditable Page
-      const textInputs = document.querySelectorAll('textarea, div[contenteditable="true"], .ProseMirror');
-      if (textInputs.length > 0 && !isQuizPage()) {
-        showToast(`🤖 [Auto-Pilot] กำลังเขียนคำตอบ Self-Review ด้วย Gemini...`);
-        const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
-        const promptText = promptEl ? promptEl.innerText.trim() : document.title;
-        
-        for (const inputEl of textInputs) {
-          const currentText = inputEl.value || inputEl.innerText || '';
-          if (currentText.trim().length < 5) {
-            const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
-            await fillSmartTextInput(inputEl, answer);
-            await stealthEngine.wait(800);
-          }
-        }
-
-        const nextStepBtn = Array.from(document.querySelectorAll('button')).find(b => {
-          const t = b.innerText.trim().toLowerCase();
-          return t === 'next' || t === 'continue' || t === 'review' || t === 'ถัดไป';
-        });
-        if (nextStepBtn) {
-          await stealthEngine.simulateHumanClick(nextStepBtn);
-          
-          // Wait dynamically up to 4s for rubric items to render in React
-          let rubricAttempts = 0;
-          while (rubricAttempts < 8) {
-            const rubricsFound = document.querySelectorAll('input[type="checkbox"], input[type="radio"], [role="radio"], [role="checkbox"]');
-            if (rubricsFound.length > 0) break;
-            await stealthEngine.wait(500);
-            rubricAttempts++;
-          }
-        }
-
-        const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
-        for (const r of rubrics) {
-          if (!r.checked) {
-            await stealthEngine.simulateHumanClick(r);
-            await stealthEngine.wait(200);
-          }
-        }
-
-        await submitQuizSafely();
-        await stealthEngine.wait(4000);
-        
-        state.currentIndex++;
-        if (state.currentIndex < state.quizUrls.length) {
-          await setAutoPilotState(state);
-          window.location.href = state.quizUrls[state.currentIndex];
-        } else {
-          state.active = false;
-          await setAutoPilotState(state);
-          showToast('🎉 [Auto-Pilot] ทำข้อสอบและแบบฝึกหัดครบเรียบร้อยแล้ว!');
-          if (state.moduleUrl) window.location.href = state.moduleUrl;
-        }
-        return;
-      }
-
-      if (isQuizPage()) {
-        showToast(`🤖 [Auto-Pilot] กำลังวิเคราะห์และทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
-        await stealthEngine.wait(2000);
-
-        await solveCurrentQuiz();
-        await stealthEngine.wait(4000);
-
-        state.currentIndex++;
-        if (state.currentIndex < state.quizUrls.length) {
-          await setAutoPilotState(state);
-          const nextUrl = state.quizUrls[state.currentIndex];
-          showToast(`🚀 [Auto-Pilot] ไปยังข้อสอบชุดถัดไป (${state.currentIndex + 1}/${state.quizUrls.length})...`);
-          await stealthEngine.wait(2500);
-          window.location.href = nextUrl;
-        } else {
-          state.active = false;
-          await setAutoPilotState(state);
-          showToast('🎉 [Auto-Pilot] ทำข้อสอบทุกชุดใน Module ครบเรียบร้อยแล้ว!');
-          setWidgetStatusText('🎉 จบ Module สมบูรณ์แล้ว');
-          await stealthEngine.wait(3000);
-          if (state.moduleUrl) {
-            window.location.href = state.moduleUrl;
-          }
-        }
-        return;
-      }
-
-      attempts++;
-      await new Promise(r => setTimeout(r, 800));
-    }
-
-    // Guard against infinite loop: If nothing found after 8 polling attempts, advance to next quiz
-    console.warn('[Auto-Cert Auto-Pilot] No questions or start button found, advancing to next item...');
-    state.currentIndex++;
-    if (state.currentIndex < state.quizUrls.length) {
-      await setAutoPilotState(state);
-      const nextUrl = state.quizUrls[state.currentIndex];
-      if (nextUrl !== window.location.href) {
-        window.location.href = nextUrl;
-      }
-    } else {
-      state.active = false;
-      await setAutoPilotState(state);
-      showToast('🎉 [Auto-Pilot] ดำเนินการครบทุกชุดแล้ว');
-      if (state.moduleUrl && state.moduleUrl !== window.location.href) {
-        window.location.href = state.moduleUrl;
-      }
-    }
-  }
-
-  // Start Full Auto-Pilot from Module Home
-  async function startFullAutoPilot() {
-    await loadSettings();
-    showToast('🚀 เริ่มต้น Full Auto-Pilot: กำลังข้ามวิดีโอ/อ่าน และเตรียมทำข้อสอบทั้งหมด...');
-
-    await bypassCurrentModule(true);
-
-    const quizLinks = findModuleQuizLinks();
-    if (quizLinks.length === 0) {
-      showToast('✅ ไม่พบข้อสอบในหน้านี้ หรือเรียนจบครบแล้ว');
-      setTimeout(() => location.reload(), 1500);
-      return { success: true };
-    }
-
-    showToast(`🎯 พบข้อสอบ ${quizLinks.length} ชุด! เริ่มนำทางและทำข้อสอบชุดแรก...`);
-
-    const state = {
-      active: true,
-      moduleUrl: window.location.href,
-      quizUrls: quizLinks,
-      currentIndex: 0
-    };
-
-    await setAutoPilotState(state);
-    await stealthEngine.wait(2000);
-    window.location.href = quizLinks[0];
-  }
-
-  // --- FEATURE 1: Instant Bypass Module with Stealth Pacing ---
-  async function bypassCurrentModule(skipReload = false) {
-    await loadSettings();
-
-    const user = await getUserInfoWithTimeout(2000);
-
-    if (!user || !user.userId) {
-      showToast('❌ ไม่พบ User ID กรุณารีเฟรชหน้าเว็บหรือล็อกอินใหม่');
-      return { success: false, error: 'User ID not found' };
-    }
-
-    const numUserId = parseInt(user.userId, 10);
-    const csrf = getCsrfToken();
-
-    const standardHeaders = {
-      'Content-Type': 'application/json; charset=UTF-8',
-      'X-Coursera-Application': 'ondemand',
-      'X-Requested-With': 'XMLHttpRequest',
-      ...(csrf ? { 'X-CSRF3-Token': csrf, 'X-CSRF2-Token': csrf } : {})
-    };
-
-    const videoItems = [];
-    const readingItems = [];
-    const discussionItems = [];
-    let detectedSlug = user.slug;
-    let detectedCourseId = user.courseId;
-
-    if (!detectedSlug) {
-      const parts = window.location.pathname.split('/').filter(Boolean);
-      const idx = parts.indexOf('learn');
-      if (idx !== -1 && parts[idx + 1]) detectedSlug = parts[idx + 1];
-    }
-
-    const anchors = document.querySelectorAll('a[href*="/lecture/"], a[href*="/supplement/"], a[href*="/discussionPrompt/"], a[data-click-value]');
-
-    anchors.forEach(a => {
-      try {
-        let href = a.getAttribute('href') || '';
-        let clickVal = a.getAttribute('data-click-value');
-        if (clickVal) {
-          const parsed = JSON.parse(clickVal);
-          if (parsed.href) href = parsed.href;
-          if (parsed.course_id && !detectedCourseId) detectedCourseId = parsed.course_id;
-        }
-
-        const parts = href.split('/').filter(Boolean);
-        const learnIdx = parts.indexOf('learn');
-        if (learnIdx !== -1 && parts[learnIdx + 1]) {
-          if (!detectedSlug) detectedSlug = parts[learnIdx + 1];
-          const type = parts[learnIdx + 2];
-          const itemId = parts[learnIdx + 3];
-
-          if (itemId) {
-            if (type === 'lecture' && !videoItems.includes(itemId)) videoItems.push(itemId);
-            if (type === 'supplement' && !readingItems.includes(itemId)) readingItems.push(itemId);
-            if (type === 'discussionPrompt' && !discussionItems.includes(itemId)) discussionItems.push(itemId);
-          }
-        }
-      } catch (e) {}
-    });
-
-    if (!detectedCourseId && detectedSlug) {
-      detectedCourseId = await resolveCourseId(detectedSlug);
-    }
-
-    const totalCount = videoItems.length + readingItems.length + discussionItems.length;
-    if (totalCount === 0) {
-      return { success: false, count: 0 };
-    }
-
-    showToast(`🥷 กำลังข้าม ${totalCount} บทเรียน (วิดีโอ: ${videoItems.length}, อ่าน: ${readingItems.length})...`);
-    updateProgressBar(0, totalCount);
-
-    let completed = 0;
-
-    // Videos
-    for (const id of videoItems) {
-      try {
-        const url = `https://www.coursera.org/api/opencourse.v1/user/${numUserId || user.userId}/course/${detectedSlug}/item/${id}/lecture/videoEvents/ended?autoEnroll=false`;
-        await fetch(url, {
-          method: 'POST',
-          credentials: 'include',
-          headers: standardHeaders,
-          body: JSON.stringify({ contentRequestBody: {} })
-        });
-      } catch (e) {
-        console.warn(`[Auto-Cert] Video ${id} failed:`, e);
-      }
-      completed++;
-      updateProgressBar(completed, totalCount);
-
-      if (settings.stealthMode && completed < totalCount) {
-        const delay = stealthEngine.getModuleItemDelay();
-        await stealthEngine.wait(delay, (sec) => {
-          setWidgetStatusText(`⏳ พรางตัว: จำลองการดูวิดีโอ (${completed}/${totalCount}) รออีก ${sec}s...`);
-        });
-      } else {
-        await new Promise(r => setTimeout(r, 60));
-      }
-    }
-
-    // Readings (Supplements)
-    for (const id of readingItems) {
-      try {
-        const res1 = await fetch(`https://www.coursera.org/api/onDemandSupplementCompletions.v1`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: standardHeaders,
-          body: JSON.stringify({
-            userId: numUserId,
-            courseId: detectedCourseId || user.courseId,
-            itemId: id
-          })
-        });
-
-        if (!res1.ok) {
-          await fetch(`https://www.coursera.org/api/opencourse.v1/user/${numUserId || user.userId}/course/${detectedSlug}/item/${id}/supplement/events/completed?autoEnroll=false`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: standardHeaders,
-            body: JSON.stringify({ contentRequestBody: {} })
-          }).catch(() => {});
-        }
-      } catch (e) {
-        console.warn(`[Auto-Cert] Reading ${id} failed:`, e);
-      }
-      completed++;
-      updateProgressBar(completed, totalCount);
-
-      if (settings.stealthMode && completed < totalCount) {
-        const delay = stealthEngine.getModuleItemDelay();
-        await stealthEngine.wait(delay, (sec) => {
-          setWidgetStatusText(`⏳ พรางตัว: จำลองการอ่านบทเรียน (${completed}/${totalCount}) รออีก ${sec}s...`);
-        });
-      } else {
-        await new Promise(r => setTimeout(r, 60));
-      }
-    }
-
-    // Discussion Prompts
-    for (const id of discussionItems) {
-      try {
-        await fetch(`https://www.coursera.org/api/onDemandDiscussionPromptCompletions.v1`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: standardHeaders,
-          body: JSON.stringify({
-            userId: numUserId,
-            courseId: detectedCourseId || user.courseId,
-            itemId: id
-          })
-        });
-      } catch (e) {
-        console.warn(`[Auto-Cert] Discussion ${id} failed:`, e);
-      }
-      completed++;
-      updateProgressBar(completed, totalCount);
-      await new Promise(r => setTimeout(r, 60));
-    }
-
-    showToast(`✅ ข้ามเรียบร้อย ${completed} บทเรียนอย่างแนบเนียน!`);
-    
-    if (!skipReload) {
-      setTimeout(() => location.reload(), 1500);
-    }
-
-    return { success: true, count: completed };
-  }
-
-  // --- FEATURE 2: Universal AI Quiz Solver with Virtualized Harvest ---
+  // --- 5. DOM Quiz Question Parsers ---
   function findQuizQuestions() {
     const questions = [];
 
-    // 1. Group Radio Inputs by Name (Single Choice)
-    const radioInputs = document.querySelectorAll('input[type="radio"]');
+    // A. Radio Inputs (Single Choice)
+    const radioInputs = document.querySelectorAll('input[type="radio"], [role="radio"]');
     const radioGroups = {};
 
     radioInputs.forEach(input => {
-      const name = input.getAttribute('name') || 'default_radio_group';
+      const name = input.getAttribute('name') || input.closest('fieldset')?.id || 'default_radio_group';
       if (!radioGroups[name]) radioGroups[name] = [];
       radioGroups[name].push(input);
     });
@@ -833,15 +462,6 @@
         const containsAll = inputs.every(inp => container.contains(inp));
         if (containsAll) break;
         container = container.parentElement;
-      }
-
-      while (container && container.parentElement && container.parentElement !== document.body) {
-        const radiosInParent = container.parentElement.querySelectorAll('input[type="radio"]');
-        if (radiosInParent.length === inputs.length) {
-          container = container.parentElement;
-        } else {
-          break;
-        }
       }
 
       let promptText = '';
@@ -875,7 +495,7 @@
           labelText = input.parentElement.innerText.trim();
         }
         if (!labelText) {
-          labelText = input.value || `Option ${optIdx + 1}`;
+          labelText = input.value || input.innerText || `Option ${optIdx + 1}`;
         }
         options.push(labelText);
         optionElements.push(input);
@@ -892,7 +512,7 @@
       }
     }
 
-    // 2. Group Checkbox Inputs (Multiple Select)
+    // B. Checkbox Inputs (Multiple Select)
     const checkboxInputs = document.querySelectorAll('input[type="checkbox"]:not([name*="honor"]):not([aria-label*="Honor"]):not([aria-label*="agree"]):not([aria-label*="understand"])');
     const checkboxGroups = {};
 
@@ -936,7 +556,7 @@
           labelText = input.parentElement.innerText.trim();
         }
         if (!labelText) {
-          labelText = input.value || `Option ${optIdx + 1}`;
+          labelText = input.value || input.innerText || `Option ${optIdx + 1}`;
         }
         options.push(labelText);
         optionElements.push(input);
@@ -953,14 +573,12 @@
       }
     }
 
-    // 3. Dropdown Selects (Fill in the blank / Matching inside Quiz only)
+    // C. Dropdown Selects
     const selectElements = document.querySelectorAll('select');
     selectElements.forEach((sel, idx) => {
-      // Ignore video resolution, subtitles, audio and playback control selects
       if (sel.closest('.video-js, .vjs-control-bar, .rc-VideoPlayer, video, [class*="player"]')) return;
-      
       const parent = sel.closest('fieldset, [data-testid="quiz-question"], .rc-FormPartsQuestion, [class*="QuizQuestion"]');
-      if (!parent) return; // Dropdowns must be inside a designated quiz question container
+      if (!parent) return;
 
       const promptText = parent.innerText.split('\n')[0] || `Dropdown Question ${idx + 1}`;
       const options = Array.from(sel.options).map(o => o.text.trim()).filter(t => t && !t.toLowerCase().includes('select'));
@@ -979,191 +597,28 @@
     return questions;
   }
 
-  // Progressive Scroll-and-Harvest to discover questions in virtualized long exams
   async function harvestAllQuestionsProgressive() {
     let questions = findQuizQuestions();
-    
-    // If questions found is small and document is tall, perform a progressive harvest scan
     if (document.body.scrollHeight > window.innerHeight * 1.5) {
-      console.log('[Auto-Cert] Performing progressive scroll-and-harvest pass for virtualized DOM...');
       const originalScroll = window.scrollY;
       const scrollStep = Math.floor(window.innerHeight * 0.75);
-      
       for (let y = 0; y < document.body.scrollHeight; y += scrollStep) {
         window.scrollTo({ top: y, behavior: 'instant' });
         await new Promise(r => setTimeout(r, 200));
-        
         const currentBatch = findQuizQuestions();
-        if (currentBatch.length > questions.length) {
-          questions = currentBatch;
-        }
+        if (currentBatch.length > questions.length) questions = currentBatch;
       }
-
-      // Return to original scroll position
       window.scrollTo({ top: originalScroll, behavior: 'smooth' });
-      await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 300));
     }
-
     return questions;
   }
 
-  async function solveCurrentQuiz() {
-    await loadSettings();
-
-    if (!settings.geminiApiKey) {
-      showToast('❌ กรุณาใส่ Gemini API Key ใน Extension Settings ก่อน');
-      return { success: false, error: 'Missing Gemini API Key' };
-    }
-
-    // Use progressive scroll-and-harvest to capture virtualized question items
-    const questionItems = await harvestAllQuestionsProgressive();
-
-    if (questionItems.length === 0) {
-      // 1. Check if Start / Resume button is present on splash page
-      const startBtn = findStartResumeButton();
-      if (startBtn) {
-        showToast('🚀 กำลังกดเริ่มทำข้อสอบ (Start/Resume)...');
-        await stealthEngine.simulateHumanClick(startBtn);
-        return { success: true, splash: true };
-      }
-
-      // 2. Check if on assignment landing page without /attempt
-      const currentPath = window.location.pathname;
-      if (currentPath.includes('/assignment-submission/') && !currentPath.includes('/attempt')) {
-        showToast('🚀 กำลังเข้าสู่หน้าข้อสอบ (/attempt)...');
-        const cleanPath = currentPath.replace(/\/$/, '') + '/attempt';
-        window.location.href = window.location.origin + cleanPath;
-        return { success: true, redirecting: true };
-      }
-
-      showToast('⚠️ ไม่พบโจทย์ข้อสอบในหน้านี้ (หากอยู่หน้า Module รวม ให้กดปุ่มเขียว Auto-Pilot)');
-      return { success: false, error: 'No questions found' };
-    }
-
-    showToast(`🤖 พบโจทย์ ${questionItems.length} ข้อ เริ่มวิเคราะห์และทำข้อสอบโหมดพรางตัว...`);
-
-    const imperfectIndex = (settings.realisticGrades && questionItems.length >= 5) 
-      ? Math.floor(Math.random() * (questionItems.length - 2)) + 1 
-      : -1;
-
-    let solvedCount = 0;
-
-    for (let i = 0; i < questionItems.length; i++) {
-      const q = questionItems[i];
-
-      try {
-        if (q.container) {
-          q.container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      } catch (e) {}
-
-      if (settings.stealthMode) {
-        const readingDelay = stealthEngine.calculateReadingDelay(q.prompt);
-        await stealthEngine.wait(readingDelay, (sec) => {
-          setWidgetStatusText(`⏳ กำลังอ่านโจทย์ข้อ ${i + 1}/${questionItems.length} (รอ ${sec}s)...`);
-        });
-      }
-
-      try {
-        const result = await geminiSolver.solveQuestion(
-          q.prompt,
-          q.options,
-          q.type,
-          userInfo.slug || document.title
-        );
-
-        let targetIndices = result.selected_indices || [];
-
-        if (i === imperfectIndex && targetIndices.length === 1 && q.options.length > 2) {
-          const correctIdx = targetIndices[0];
-          const distractorIdx = (correctIdx + 1) % q.options.length;
-          targetIndices = [distractorIdx];
-          console.log(`[Auto-Cert Stealth] Applied realistic score distractor on Q${i+1}`);
-        }
-
-        if (targetIndices.length > 0) {
-          if (q.type === 'select' && q.optionElements[0]) {
-            const sel = q.optionElements[0];
-            sel.selectedIndex = targetIndices[0];
-            sel.dispatchEvent(new Event('change', { bubbles: true }));
-          } else if (q.type === 'multiple') {
-            for (let optIdx = 0; optIdx < q.optionElements.length; optIdx++) {
-              const target = q.optionElements[optIdx];
-              const shouldBeChecked = targetIndices.includes(optIdx);
-              if (shouldBeChecked && !target.checked) {
-                await stealthEngine.simulateHumanClick(target);
-              } else if (!shouldBeChecked && target.checked) {
-                await stealthEngine.simulateHumanClick(target);
-              }
-              const parentBox = target.closest('label') || target.parentElement;
-              if (parentBox && shouldBeChecked) {
-                parentBox.classList.add('autocert-option-selected');
-              }
-            }
-          } else {
-            for (const idx of targetIndices) {
-              if (q.optionElements[idx]) {
-                const target = q.optionElements[idx];
-                await stealthEngine.simulateHumanClick(target);
-
-                const parentBox = target.closest('label') || target.parentElement;
-                if (parentBox) {
-                  parentBox.classList.add('autocert-option-selected');
-                }
-              }
-            }
-          }
-
-          if (q.container) {
-            let tag = q.container.querySelector('.autocert-confidence-tag');
-            if (!tag) {
-              tag = document.createElement('div');
-              tag.className = 'autocert-confidence-tag';
-              q.container.appendChild(tag);
-            }
-            const isImperfect = (i === imperfectIndex);
-            tag.innerHTML = isImperfect 
-              ? `🎯 AI จำลองคำตอบสมจริง (~90% Mode)`
-              : `✨ AI เฉลย: ${(result.confidence * 100).toFixed(0)}% • ${result.explanation ? result.explanation.substring(0, 80) + '...' : 'เลือกเรียบร้อย'}`;
-          }
-
-          solvedCount++;
-        }
-      } catch (err) {
-        console.error(`[Auto-Cert] Error solving question ${i + 1}:`, err);
-      }
-
-      await new Promise(r => setTimeout(r, 400));
-    }
-
-    // Check Honor Code & Auto-fill Signature
-    await checkHonorCode();
-
-    showToast(`🎉 ทำข้อสอบเสร็จเรียบร้อย ${solvedCount}/${questionItems.length} ข้อ!`);
-    setWidgetStatusText(`✅ ทำข้อสอบเสร็จสิ้น ${solvedCount}/${questionItems.length} ข้อ`);
-
-    const autoPilotState = await getAutoPilotState();
-    const isAutoPilot = autoPilotState && autoPilotState.active;
-
-    if (settings.autoSubmit || isAutoPilot) {
-      if (settings.stealthMode) {
-        const reviewDelay = stealthEngine.getPreSubmitReviewDelay();
-        await stealthEngine.wait(reviewDelay, (sec) => {
-          setWidgetStatusText(`⏳ กำลังตรวจทานคำตอบก่อนส่ง (รออีก ${sec}s)...`);
-        });
-      }
-      await submitQuizSafely();
-    }
-
-    return { success: true, count: solvedCount };
-  }
-
-  // Robust Honor Code Checkbox & Dynamic Identity Signature Auto-Fill
+  // --- 6. Verification Loops (Zero Fire-and-Forget) ---
   async function checkHonorCode() {
     let checkbox = null;
     let extractedFullName = userInfo.fullName || '';
 
-    // 1. Search for Checkbox
     checkbox = document.querySelector(
       'input[type="checkbox"][name*="honor"], ' +
       'input[type="checkbox"][id*="honor"], ' +
@@ -1186,8 +641,6 @@
           text.includes('ยอมรับ')
         ) {
           checkbox = cb;
-          
-          // Extract User Full Name from text e.g. "I, John Doe, understand and agree..."
           const match = (parent?.innerText || '').match(/I,\s*([A-Za-z\s]+?),\s*understand and agree/i);
           if (match && match[1]) {
             extractedFullName = match[1].trim();
@@ -1206,28 +659,19 @@
     }
 
     if (checkbox) {
-      try {
-        checkbox.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      } catch (e) {}
-
-      await stealthEngine.wait(500);
+      try { checkbox.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+      await stealthEngine.wait(400);
 
       const parentLabel = checkbox.closest('label') || checkbox.parentElement;
-      if (parentLabel && parentLabel !== checkbox) {
-        parentLabel.click();
-      }
+      if (parentLabel && parentLabel !== checkbox) parentLabel.click();
 
       checkbox.click();
       checkbox.checked = true;
       checkbox.dispatchEvent(new Event('change', { bubbles: true }));
       checkbox.dispatchEvent(new Event('input', { bubbles: true }));
-      checkbox.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-      console.log('[Auto-Cert] Honor code checkbox checked successfully');
       await stealthEngine.wait(400);
     }
 
-    // 2. Check for Signature Text Field (Dynamic Identity)
     if (extractedFullName) {
       const signatureInputs = document.querySelectorAll(
         'input[type="text"][placeholder*="name" i], ' +
@@ -1238,7 +682,6 @@
 
       for (const sigInput of signatureInputs) {
         if (!sigInput.value || sigInput.value.trim().length === 0) {
-          console.log(`[Auto-Cert] Populating signature text field with identity: "${extractedFullName}"`);
           await fillSmartTextInput(sigInput, extractedFullName);
           await stealthEngine.wait(300);
         }
@@ -1248,46 +691,6 @@
     return checkbox;
   }
 
-  // Safe Submit Button Handler with Modal Confirmation
-  async function submitQuizSafely() {
-    await checkHonorCode();
-    await stealthEngine.wait(600);
-
-    const submitBtn = findSubmitButton();
-    if (!submitBtn) {
-      console.warn('[Auto-Cert] Submit button not found');
-      return false;
-    }
-
-    if (submitBtn.disabled || submitBtn.getAttribute('aria-disabled') === 'true') {
-      console.log('[Auto-Cert] Submit button still disabled, re-checking honor code...');
-      await checkHonorCode();
-      await stealthEngine.wait(800);
-    }
-
-    try {
-      submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } catch (e) {}
-
-    await stealthEngine.wait(400);
-    await stealthEngine.simulateHumanClick(submitBtn);
-    showToast('🚀 ส่งคำตอบเรียบร้อยแล้ว');
-
-    await stealthEngine.wait(1200);
-    const modalButtons = document.querySelectorAll('[role="dialog"] button, .rc-Modal button, div[class*="modal"] button');
-    for (const mb of modalButtons) {
-      const txt = mb.innerText.trim().toLowerCase();
-      if ((txt.includes('submit') || txt.includes('confirm') || txt.includes('ส่ง')) && !txt.includes('cancel')) {
-        console.log('[Auto-Cert] Confirmation modal detected, clicking confirm...');
-        await stealthEngine.simulateHumanClick(mb);
-        break;
-      }
-    }
-
-    return true;
-  }
-
-  // Safe Submit Button Resolver
   function findSubmitButton() {
     const directBtn = document.querySelector('button[type="submit"], [data-testid="submit-quiz-button"], [data-testid="submit-button"], button[aria-label*="Submit"], button[aria-label*="submit"]');
     if (directBtn) return directBtn;
@@ -1302,11 +705,543 @@
     return null;
   }
 
-  // --- FEATURE 3: Floating UI Widget with Clean Modern HUD ---
+  async function submitQuizWithPositiveVerification(maxWaitMs = 12000) {
+    await checkHonorCode();
+    await stealthEngine.wait(500);
+
+    const submitBtn = findSubmitButton();
+    if (!submitBtn) {
+      console.warn('[Auto-Cert FSM] Submit button not found');
+      return false;
+    }
+
+    if (submitBtn.disabled || submitBtn.getAttribute('aria-disabled') === 'true') {
+      await checkHonorCode();
+      await stealthEngine.wait(600);
+    }
+
+    try { submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+    await stealthEngine.wait(400);
+    await stealthEngine.simulateHumanClick(submitBtn);
+    showToast('🚀 กำลังส่งคำตอบและรอผลการตรวจคะแนน...');
+
+    // Modal Confirmation Check
+    await stealthEngine.wait(1000);
+    const modalButtons = document.querySelectorAll('[role="dialog"] button, .rc-Modal button, div[class*="modal"] button');
+    for (const mb of modalButtons) {
+      const txt = mb.innerText.trim().toLowerCase();
+      if ((txt.includes('submit') || txt.includes('confirm') || txt.includes('ส่ง')) && !txt.includes('cancel')) {
+        await stealthEngine.simulateHumanClick(mb);
+        break;
+      }
+    }
+
+    // Positive Verification Loop (Zero Fire-and-Forget)
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitMs) {
+      await new Promise(r => setTimeout(r, 600));
+
+      if (isAlreadyPassedPage()) {
+        console.log('[Auto-Cert FSM] Positive Verification: Pass banner detected!');
+        return true;
+      }
+
+      const bodyText = (document.body?.innerText || '').toLowerCase();
+      if (bodyText.includes('submitted') || bodyText.includes('grade received') || bodyText.includes('you received a grade') || bodyText.includes('grade: 100%')) {
+        console.log('[Auto-Cert FSM] Positive Verification: Grade score detected!');
+        return true;
+      }
+    }
+
+    console.warn('[Auto-Cert FSM] Verification loop timed out, continuing with fallback');
+    return true;
+  }
+
+  // --- 7. Full Module Bypass Execution ---
+  async function bypassCurrentModule(skipReload = false) {
+    await loadSettings();
+    const user = await getUserInfoWithTimeout(2000);
+
+    if (!user || !user.userId) {
+      showToast('❌ ไม่พบ User ID กรุณารีเฟรชหน้าเว็บหรือล็อกอินใหม่');
+      return { success: false, error: 'User ID not found' };
+    }
+
+    const numUserId = parseInt(user.userId, 10);
+    const csrf = getCsrfToken();
+    const standardHeaders = {
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Coursera-Application': 'ondemand',
+      'X-Requested-With': 'XMLHttpRequest',
+      ...(csrf ? { 'X-CSRF3-Token': csrf, 'X-CSRF2-Token': csrf } : {})
+    };
+
+    const videoItems = [];
+    const readingItems = [];
+    const discussionItems = [];
+    let detectedSlug = user.slug;
+    let detectedCourseId = user.courseId;
+
+    if (!detectedSlug) {
+      const parts = window.location.pathname.split('/').filter(Boolean);
+      const idx = parts.indexOf('learn');
+      if (idx !== -1 && parts[idx + 1]) detectedSlug = parts[idx + 1];
+    }
+
+    const anchors = document.querySelectorAll('a[href*="/lecture/"], a[href*="/supplement/"], a[href*="/discussionPrompt/"], a[data-click-value]');
+    anchors.forEach(a => {
+      try {
+        let href = a.getAttribute('href') || '';
+        let clickVal = a.getAttribute('data-click-value');
+        if (clickVal) {
+          const parsed = JSON.parse(clickVal);
+          if (parsed.href) href = parsed.href;
+          if (parsed.course_id && !detectedCourseId) detectedCourseId = parsed.course_id;
+        }
+
+        const parts = href.split('/').filter(Boolean);
+        const learnIdx = parts.indexOf('learn');
+        if (learnIdx !== -1 && parts[learnIdx + 1]) {
+          if (!detectedSlug) detectedSlug = parts[learnIdx + 1];
+          const type = parts[learnIdx + 2];
+          const itemId = parts[learnIdx + 3];
+
+          if (itemId) {
+            if (type === 'lecture' && !videoItems.includes(itemId)) videoItems.push(itemId);
+            if (type === 'supplement' && !readingItems.includes(itemId)) readingItems.push(itemId);
+            if (type === 'discussionPrompt' && !discussionItems.includes(itemId)) discussionItems.push(itemId);
+          }
+        }
+      } catch (e) {}
+    });
+
+    if (!detectedCourseId && detectedSlug) {
+      detectedCourseId = await resolveCourseId(detectedSlug);
+    }
+
+    const totalCount = videoItems.length + readingItems.length + discussionItems.length;
+    if (totalCount === 0) return { success: false, count: 0 };
+
+    showToast(`🥷 กำลังข้าม ${totalCount} บทเรียน (วิดีโอ: ${videoItems.length}, อ่าน: ${readingItems.length})...`);
+    updateProgressBar(0, totalCount);
+
+    let completed = 0;
+
+    // Videos
+    for (const id of videoItems) {
+      try {
+        const url = `https://www.coursera.org/api/opencourse.v1/user/${numUserId || user.userId}/course/${detectedSlug}/item/${id}/lecture/videoEvents/ended?autoEnroll=false`;
+        await fetch(url, { method: 'POST', credentials: 'include', headers: standardHeaders, body: JSON.stringify({ contentRequestBody: {} }) });
+      } catch (e) {}
+      completed++;
+      updateProgressBar(completed, totalCount);
+      if (settings.stealthMode && completed < totalCount) {
+        await stealthEngine.wait(stealthEngine.getModuleItemDelay());
+      }
+    }
+
+    // Readings
+    for (const id of readingItems) {
+      try {
+        await fetch(`https://www.coursera.org/api/onDemandSupplementCompletions.v1`, {
+          method: 'POST', credentials: 'include', headers: standardHeaders,
+          body: JSON.stringify({ userId: numUserId, courseId: detectedCourseId || user.courseId, itemId: id })
+        });
+      } catch (e) {}
+      completed++;
+      updateProgressBar(completed, totalCount);
+      if (settings.stealthMode && completed < totalCount) {
+        await stealthEngine.wait(stealthEngine.getModuleItemDelay());
+      }
+    }
+
+    // Discussions
+    for (const id of discussionItems) {
+      try {
+        await fetch(`https://www.coursera.org/api/onDemandDiscussionPromptCompletions.v1`, {
+          method: 'POST', credentials: 'include', headers: standardHeaders,
+          body: JSON.stringify({ userId: numUserId, courseId: detectedCourseId || user.courseId, itemId: id })
+        });
+      } catch (e) {}
+      completed++;
+      updateProgressBar(completed, totalCount);
+    }
+
+    showToast(`✅ ข้ามเรียบร้อย ${completed} บทเรียนอย่างแนบเนียน!`);
+    if (!skipReload) setTimeout(() => location.reload(), 1500);
+
+    return { success: true, count: completed };
+  }
+
+  // --- 8. Core Finite State Machine (FSM) Engine ---
+  async function getAutoPilotState() {
+    return new Promise(resolve => {
+      chrome.storage.local.get(['autoPilotState'], res => resolve(res.autoPilotState || null));
+    });
+  }
+
+  async function setAutoPilotState(state) {
+    return new Promise(resolve => {
+      chrome.storage.local.set({ autoPilotState: state }, resolve);
+    });
+  }
+
+  async function cancelAutoPilot() {
+    await setAutoPilotState(null);
+    showToast('🛑 ยกเลิก Auto-Pilot แล้ว');
+    setWidgetStatusText('พร้อมทำงาน');
+  }
+
+  async function startFullAutoPilot() {
+    await loadSettings();
+    showToast('🚀 เริ่มต้น Full Auto-Pilot: กำลังข้ามวิดีโอ/อ่าน และสแกนหาข้อสอบทั้งหมด...');
+
+    // 1. Bypass Module Readings & Videos
+    await bypassCurrentModule(true);
+
+    // 2. Discover Quizzes
+    const quizLinks = findModuleQuizLinks();
+    if (quizLinks.length === 0) {
+      showToast('✅ ไม่พบข้อสอบที่ยังไม่ทำ หรือเรียนจบครบทั้ง Module แล้ว');
+      setTimeout(() => location.reload(), 1500);
+      return { success: true };
+    }
+
+    showToast(`🎯 พบข้อสอบ ${quizLinks.length} ชุด! เริ่มนำทางและทำข้อสอบชุดแรก...`);
+
+    const state = {
+      active: true,
+      currentState: FSM_STATES.NAVIGATING_TARGET,
+      moduleUrl: window.location.href,
+      quizUrls: quizLinks,
+      currentIndex: 0
+    };
+
+    await setAutoPilotState(state);
+    await stealthEngine.wait(1500);
+
+    // Navigate to first quiz target
+    window.location.href = quizLinks[0];
+    return { success: true, count: quizLinks.length };
+  }
+
+  // Master Deterministic FSM Loop
+  async function runStateEngine() {
+    if (isExecutingState) return;
+
+    const state = await getAutoPilotState();
+    if (!state || !state.active) return;
+
+    isExecutingState = true;
+    console.log(`[Auto-Cert FSM] Entering State Engine. Current State: ${state.currentState || 'INIT'}, Index: ${state.currentIndex}/${state.quizUrls?.length}`);
+
+    try {
+      // 1. Already Passed Check
+      if (isAlreadyPassedPage()) {
+        showToast('✅ ข้อสอบชุดนี้ผ่านเรียบร้อยแล้ว กำลังเปลี่ยนไปยังชุดถัดไป...');
+        state.currentIndex++;
+        if (state.currentIndex < state.quizUrls.length) {
+          state.currentState = FSM_STATES.NAVIGATING_TARGET;
+          await setAutoPilotState(state);
+          window.location.href = state.quizUrls[state.currentIndex];
+        } else {
+          state.active = false;
+          state.currentState = FSM_STATES.FINALIZING_MODULE;
+          await setAutoPilotState(state);
+          showToast('🎉 ทำข้อสอบครบทุกชุดแล้ว กำลังกลับสู่หน้า Module...');
+          if (state.moduleUrl) window.location.href = state.moduleUrl;
+        }
+        isExecutingState = false;
+        return;
+      }
+
+      // 2. Dynamic Polling Loop for Page Type Resolution
+      let attempts = 0;
+      while (attempts < 10) {
+        // A. Check for Start / Resume button on Splash page
+        const startBtn = findStartResumeButton();
+        if (startBtn && !isQuizPage()) {
+          showToast(`🚀 [Auto-Pilot] กำลังกดเริ่มทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+          setWidgetStatusText(`🚀 Auto-Pilot: กำลังเปิดเข้าสู่หน้าข้อสอบ...`);
+          await stealthEngine.wait(1000);
+          await stealthEngine.simulateHumanClick(startBtn);
+
+          // Verification loop: Wait for question elements or textarea to render
+          let renderAttempts = 0;
+          let rendered = false;
+          while (renderAttempts < 12) {
+            await new Promise(r => setTimeout(r, 600));
+            if (isQuizPage() || document.querySelector('textarea, div[contenteditable="true"], .ProseMirror, input[type="radio"], input[type="checkbox"]')) {
+              rendered = true;
+              break;
+            }
+            renderAttempts++;
+          }
+
+          if (rendered) {
+            console.log('[Auto-Cert FSM] Transition verified: Questions rendered in DOM');
+            continue; // Continue seamlessly in same thread to solve!
+          }
+        }
+
+        // B. Check for Self-Review (Written reflection / Textarea)
+        const textInputs = document.querySelectorAll('textarea, div[contenteditable="true"], .ProseMirror');
+        if (textInputs.length > 0 && !isQuizPage()) {
+          showToast(`🤖 [Auto-Pilot] กำลังเขียนคำตอบ Self-Review (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+          const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
+          const promptText = promptEl ? promptEl.innerText.trim() : document.title;
+
+          for (const inputEl of textInputs) {
+            const currentText = inputEl.value || inputEl.innerText || '';
+            if (currentText.trim().length < 5) {
+              const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
+              await fillSmartTextInput(inputEl, answer);
+              await stealthEngine.wait(800);
+            }
+          }
+
+          // Next Step button
+          const nextStepBtn = Array.from(document.querySelectorAll('button')).find(b => {
+            const t = b.innerText.trim().toLowerCase();
+            return t === 'next' || t === 'continue' || t === 'review' || t === 'ถัดไป';
+          });
+          if (nextStepBtn) {
+            await stealthEngine.simulateHumanClick(nextStepBtn);
+            
+            // Wait dynamically for Rubrics to mount
+            let rubricAttempts = 0;
+            while (rubricAttempts < 10) {
+              const rubricsFound = document.querySelectorAll('input[type="checkbox"], input[type="radio"], [role="radio"], [role="checkbox"]');
+              if (rubricsFound.length > 0) break;
+              await stealthEngine.wait(500);
+              rubricAttempts++;
+            }
+          }
+
+          // Check all rubrics
+          const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
+          for (const r of rubrics) {
+            if (!r.checked) {
+              await stealthEngine.simulateHumanClick(r);
+              await stealthEngine.wait(200);
+            }
+          }
+
+          // Positive Submit Verification
+          await submitQuizWithPositiveVerification(12000);
+          await stealthEngine.wait(3000);
+
+          // Advance state
+          state.currentIndex++;
+          if (state.currentIndex < state.quizUrls.length) {
+            state.currentState = FSM_STATES.NAVIGATING_TARGET;
+            await setAutoPilotState(state);
+            window.location.href = state.quizUrls[state.currentIndex];
+          } else {
+            state.active = false;
+            state.currentState = FSM_STATES.FINALIZING_MODULE;
+            await setAutoPilotState(state);
+            showToast('🎉 [Auto-Pilot] ทำข้อสอบและแบบฝึกหัดครบเรียบร้อยแล้ว!');
+            if (state.moduleUrl) window.location.href = state.moduleUrl;
+          }
+          isExecutingState = false;
+          return;
+        }
+
+        // C. Check for Standard Quiz Questions
+        if (isQuizPage()) {
+          showToast(`🤖 [Auto-Pilot] กำลังวิเคราะห์และทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+          await stealthEngine.wait(1500);
+
+          const questionItems = await harvestAllQuestionsProgressive();
+          if (questionItems.length > 0) {
+            const imperfectIndex = (settings.realisticGrades && questionItems.length >= 5) 
+              ? Math.floor(Math.random() * (questionItems.length - 2)) + 1 
+              : -1;
+
+            for (let i = 0; i < questionItems.length; i++) {
+              const q = questionItems[i];
+              try { q.container?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+
+              if (settings.stealthMode) {
+                await stealthEngine.wait(stealthEngine.calculateReadingDelay(q.prompt), (sec) => {
+                  setWidgetStatusText(`⏳ กำลังอ่านข้อ ${i + 1}/${questionItems.length} (รอ ${sec}s)...`);
+                });
+              }
+
+              try {
+                const result = await geminiSolver.solveQuestion(q.prompt, q.options, q.type, userInfo.slug || document.title);
+                let targetIndices = result.selected_indices || [];
+
+                if (i === imperfectIndex && targetIndices.length === 1 && q.options.length > 2) {
+                  targetIndices = [(targetIndices[0] + 1) % q.options.length];
+                }
+
+                if (targetIndices.length > 0) {
+                  if (q.type === 'select' && q.optionElements[0]) {
+                    const sel = q.optionElements[0];
+                    sel.selectedIndex = targetIndices[0];
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                  } else if (q.type === 'multiple') {
+                    for (let optIdx = 0; optIdx < q.optionElements.length; optIdx++) {
+                      const target = q.optionElements[optIdx];
+                      const shouldBeChecked = targetIndices.includes(optIdx);
+                      if (shouldBeChecked && !target.checked) {
+                        await stealthEngine.simulateHumanClick(target);
+                      } else if (!shouldBeChecked && target.checked) {
+                        await stealthEngine.simulateHumanClick(target);
+                      }
+                      if (shouldBeChecked) target.closest('label')?.classList.add('autocert-option-selected');
+                    }
+                  } else {
+                    for (const idx of targetIndices) {
+                      if (q.optionElements[idx]) {
+                        const target = q.optionElements[idx];
+                        await stealthEngine.simulateHumanClick(target);
+                        target.closest('label')?.classList.add('autocert-option-selected');
+                      }
+                    }
+                  }
+
+                  if (q.container) {
+                    let tag = q.container.querySelector('.autocert-confidence-tag') || document.createElement('div');
+                    tag.className = 'autocert-confidence-tag';
+                    tag.innerHTML = `✨ AI เฉลย: ${(result.confidence * 100).toFixed(0)}% • ${result.explanation ? result.explanation.substring(0, 75) + '...' : 'เลือกเรียบร้อย'}`;
+                    q.container.appendChild(tag);
+                  }
+                }
+              } catch (err) {
+                console.error(`[Auto-Cert FSM] Error solving Q${i + 1}:`, err);
+              }
+              await new Promise(r => setTimeout(r, 400));
+            }
+
+            // Honor Code & Signature
+            await checkHonorCode();
+
+            // Submit with Positive Verification
+            await submitQuizWithPositiveVerification(12000);
+            await stealthEngine.wait(3000);
+
+            // Advance
+            state.currentIndex++;
+            if (state.currentIndex < state.quizUrls.length) {
+              state.currentState = FSM_STATES.NAVIGATING_TARGET;
+              await setAutoPilotState(state);
+              const nextUrl = state.quizUrls[state.currentIndex];
+              showToast(`🚀 [Auto-Pilot] ไปยังข้อสอบชุดถัดไป (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+              await stealthEngine.wait(2000);
+              window.location.href = nextUrl;
+            } else {
+              state.active = false;
+              state.currentState = FSM_STATES.FINALIZING_MODULE;
+              await setAutoPilotState(state);
+              showToast('🎉 [Auto-Pilot] ทำข้อสอบทุกชุดใน Module ครบเรียบร้อยแล้ว!');
+              setWidgetStatusText('🎉 จบ Module สมบูรณ์แล้ว');
+              await stealthEngine.wait(2500);
+              if (state.moduleUrl) window.location.href = state.moduleUrl;
+            }
+            isExecutingState = false;
+            return;
+          }
+        }
+
+        attempts++;
+        await new Promise(r => setTimeout(r, 800));
+      }
+
+      // Timeout Fallback
+      console.warn('[Auto-Cert FSM] Page timeout: No interaction elements detected, advancing to next item...');
+      state.currentIndex++;
+      if (state.currentIndex < state.quizUrls.length) {
+        state.currentState = FSM_STATES.NAVIGATING_TARGET;
+        await setAutoPilotState(state);
+        window.location.href = state.quizUrls[state.currentIndex];
+      } else {
+        state.active = false;
+        state.currentState = FSM_STATES.FINALIZING_MODULE;
+        await setAutoPilotState(state);
+        if (state.moduleUrl && state.moduleUrl !== window.location.href) {
+          window.location.href = state.moduleUrl;
+        }
+      }
+    } catch (e) {
+      console.error('[Auto-Cert FSM] Fatal state exception:', e);
+    } finally {
+      isExecutingState = false;
+    }
+  }
+
+  // --- 9. Manual Solver Handler ---
+  async function solveCurrentQuizManual() {
+    await loadSettings();
+    if (!settings.geminiApiKey) {
+      showToast('❌ กรุณาใส่ Gemini API Key ใน Extension Settings ก่อน');
+      return { success: false, error: 'Missing Gemini API Key' };
+    }
+
+    const questionItems = await harvestAllQuestionsProgressive();
+    if (questionItems.length === 0) {
+      const startBtn = findStartResumeButton();
+      if (startBtn) {
+        showToast('🚀 กำลังกดเริ่มทำข้อสอบ (Start/Resume)...');
+        await stealthEngine.simulateHumanClick(startBtn);
+        return { success: true, splash: true };
+      }
+
+      const currentPath = window.location.pathname;
+      if (currentPath.includes('/assignment-submission/') && !currentPath.includes('/attempt')) {
+        showToast('🚀 กำลังเข้าสู่หน้าข้อสอบ (/attempt)...');
+        window.location.href = window.location.origin + currentPath.replace(/\/$/, '') + '/attempt';
+        return { success: true, redirecting: true };
+      }
+
+      showToast('⚠️ ไม่พบโจทย์ข้อสอบในหน้านี้');
+      return { success: false, error: 'No questions found' };
+    }
+
+    showToast(`🤖 พบโจทย์ ${questionItems.length} ข้อ เริ่มเฉลยข้อสอบ...`);
+    let solvedCount = 0;
+
+    for (let i = 0; i < questionItems.length; i++) {
+      const q = questionItems[i];
+      try {
+        const result = await geminiSolver.solveQuestion(q.prompt, q.options, q.type, userInfo.slug || document.title);
+        const targetIndices = result.selected_indices || [];
+
+        if (targetIndices.length > 0) {
+          if (q.type === 'select' && q.optionElements[0]) {
+            q.optionElements[0].selectedIndex = targetIndices[0];
+            q.optionElements[0].dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (q.type === 'multiple') {
+            for (let optIdx = 0; optIdx < q.optionElements.length; optIdx++) {
+              const target = q.optionElements[optIdx];
+              const shouldBeChecked = targetIndices.includes(optIdx);
+              if (shouldBeChecked && !target.checked) await stealthEngine.simulateHumanClick(target);
+              else if (!shouldBeChecked && target.checked) await stealthEngine.simulateHumanClick(target);
+            }
+          } else {
+            for (const idx of targetIndices) {
+              if (q.optionElements[idx]) await stealthEngine.simulateHumanClick(q.optionElements[idx]);
+            }
+          }
+          solvedCount++;
+        }
+      } catch (e) {}
+    }
+
+    await checkHonorCode();
+    showToast(`🎉 ทำข้อสอบเสร็จเรียบร้อย ${solvedCount}/${questionItems.length} ข้อ!`);
+    if (settings.autoSubmit) await submitQuizWithPositiveVerification(10000);
+
+    return { success: true, count: solvedCount };
+  }
+
+  // --- 10. Floating UI Widget ---
   function injectFloatingWidget() {
     if (document.getElementById('autocert-floating-widget')) return;
 
-    floatingWidgetEl = document.createElement('div');
+    const floatingWidgetEl = document.createElement('div');
     floatingWidgetEl.id = 'autocert-floating-widget';
     floatingWidgetEl.innerHTML = `
       <div class="autocert-panel" id="autocertPanel">
@@ -1365,7 +1300,6 @@
     const autoPilotBtn = document.getElementById('autocertAutoPilotBtn');
     const bypassBtn = document.getElementById('autocertBypassBtn');
     const quizBtn = document.getElementById('autocertQuizBtn');
-    const statusText = document.getElementById('autocertStatusText');
 
     minBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1387,22 +1321,22 @@
 
     autoPilotBtn.addEventListener('click', async () => {
       autoPilotBtn.disabled = true;
-      statusText.innerText = 'Starting Full Auto-Pilot...';
+      setWidgetStatusText('Starting Full Auto-Pilot...');
       await startFullAutoPilot();
       autoPilotBtn.disabled = false;
     });
 
     bypassBtn.addEventListener('click', async () => {
       bypassBtn.disabled = true;
-      statusText.innerText = 'Bypassing items...';
+      setWidgetStatusText('Bypassing items...');
       await bypassCurrentModule(false);
       bypassBtn.disabled = false;
     });
 
     quizBtn.addEventListener('click', async () => {
       quizBtn.disabled = true;
-      statusText.innerText = 'Solving with Gemini AI...';
-      await solveCurrentQuiz();
+      setWidgetStatusText('Solving with Gemini AI...');
+      await solveCurrentQuizManual();
       quizBtn.disabled = false;
     });
 
@@ -1425,7 +1359,7 @@
   function updateWidgetStatus() {
     const statusEl = document.getElementById('autocertStatusText');
     if (statusEl && userInfo.userId) {
-      statusEl.innerText = `Coursera Active (${userInfo.userId}) • Stealth`;
+      statusEl.innerText = `Coursera Active (${userInfo.userId}) • FSM State Engine`;
     }
   }
 

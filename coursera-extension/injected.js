@@ -1,6 +1,8 @@
-// Injected script - Runs in MAIN execution context of Coursera page
+// Injected Script - Runs in MAIN Execution Context of Coursera
+// Provides high-fidelity access to React/Redux stores and intercepts API lifecycle events
+
 (function () {
-  console.log('[Auto-Cert Pro] Page Bridge Injected');
+  console.log('[Auto-Cert Pro] High-Fidelity Page Bridge Injected');
 
   function getUserId() {
     try {
@@ -21,6 +23,20 @@
     } catch (e) {}
 
     return null;
+  }
+
+  function getUserFullName() {
+    try {
+      if (window.App?.context?.dispatcher?.stores?.ApplicationStore?.userData?.fullName) {
+        return window.App.context.dispatcher.stores.ApplicationStore.userData.fullName;
+      }
+    } catch (e) {}
+    try {
+      if (window.__INITIAL_DATA__?.user?.fullName) {
+        return window.__INITIAL_DATA__.user.fullName;
+      }
+    } catch (e) {}
+    return '';
   }
 
   function getCourseData() {
@@ -54,8 +70,43 @@
       } catch (e) {}
     }
 
-    return { slug, courseId, userId: getUserId() };
+    return { 
+      slug, 
+      courseId, 
+      userId: getUserId(),
+      fullName: getUserFullName()
+    };
   }
+
+  // Hook into window.fetch to capture authoritative submission confirmations from Coursera backend
+  const originalFetch = window.fetch;
+  window.fetch = async function (...args) {
+    const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+    const response = await originalFetch.apply(this, args);
+
+    try {
+      if (url.includes('/api/onDemandQuizSubmissions.v1') || 
+          url.includes('/api/onDemandSupplementCompletions.v1') || 
+          url.includes('/api/opencourse.v1') ||
+          url.includes('/api/onDemandPeerReviews.v1')) {
+        
+        const clone = response.clone();
+        clone.json().then(data => {
+          window.postMessage({
+            source: 'AUTOCERT_PAGE',
+            type: 'API_ACTIVITY_EVENT',
+            data: {
+              url,
+              status: response.status,
+              body: data
+            }
+          }, '*');
+        }).catch(() => {});
+      }
+    } catch (e) {}
+
+    return response;
+  };
 
   // Listen to requests from content script
   window.addEventListener('message', function (event) {
@@ -73,7 +124,7 @@
     }
   });
 
-  // Initial broadcast when ready
+  // Initial broadcast
   setTimeout(() => {
     const info = getCourseData();
     window.postMessage({
@@ -81,5 +132,5 @@
       type: 'USER_INFO_RESPONSE',
       data: info
     }, '*');
-  }, 500);
+  }, 300);
 })();
