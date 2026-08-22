@@ -1,0 +1,296 @@
+/* Coursera Auto-Cert Pro - In-Page Overlay HUD */
+
+:root {
+  --ac-primary: #10b981;
+  --ac-primary-hover: #059669;
+  --ac-accent: #6366f1;
+  --ac-bg-dark: #07090e;
+  --ac-bg-card: rgba(11, 15, 25, 0.92);
+  --ac-border: rgba(255, 255, 255, 0.08);
+  --ac-text: #f8fafc;
+  --ac-text-muted: #64748b;
+}
+
+/* Floating Widget Container */
+#autocert-floating-widget {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999999;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  box-sizing: border-box;
+}
+
+#autocert-floating-widget * {
+  box-sizing: border-box;
+}
+
+.autocert-panel {
+  width: 310px;
+  background: var(--ac-bg-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--ac-border);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  color: var(--ac-text);
+  overflow: hidden;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.autocert-panel.minimized {
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.autocert-panel.minimized .autocert-body,
+.autocert-panel.minimized .autocert-title,
+.autocert-panel.minimized .autocert-controls {
+  display: none !important;
+}
+
+.autocert-panel.minimized .autocert-header {
+  padding: 10px;
+  justify-content: center;
+  height: 100%;
+}
+
+.autocert-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--ac-border);
+}
+
+.autocert-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.autocert-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #10b981, #6366f1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: white;
+}
+
+.autocert-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.01em;
+}
+
+.autocert-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.autocert-btn-icon {
+  background: transparent;
+  border: none;
+  color: var(--ac-text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  font-size: 12px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.autocert-btn-icon:hover {
+  color: var(--ac-text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Body */
+.autocert-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Action Buttons */
+.autocert-action-btn {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.autocert-btn-autopilot {
+  background: linear-gradient(135deg, #059669, #10b981);
+  color: #ffffff;
+  border-color: rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.2);
+}
+
+.autocert-btn-autopilot:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.3);
+}
+
+.autocert-btn-bypass {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+}
+
+.autocert-btn-bypass:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.autocert-btn-quiz {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: white;
+  border-color: rgba(99, 102, 241, 0.3);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.2);
+}
+
+.autocert-btn-quiz:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.3);
+}
+
+/* Speed Bar */
+.autocert-speed-section {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.autocert-speed-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ac-text-muted);
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.autocert-speed-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.autocert-speed-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  color: var(--ac-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.autocert-speed-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ac-text);
+}
+
+.autocert-speed-btn.active {
+  background: #10b981;
+  color: #042f2e;
+  border-color: #10b981;
+  font-weight: 700;
+}
+
+/* Progress Bar */
+.autocert-progress-bar {
+  display: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.autocert-progress-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #6366f1);
+  transition: width 0.3s ease;
+}
+
+.autocert-status-text {
+  font-size: 10px;
+  color: var(--ac-text-muted);
+  text-align: center;
+  min-height: 14px;
+}
+
+/* Option Selected Visual Highlight */
+.autocert-option-selected {
+  outline: 2px solid #10b981 !important;
+  background: rgba(16, 185, 129, 0.08) !important;
+  border-radius: 8px !important;
+  transition: all 0.2s ease !important;
+}
+
+/* In-page Confidence Tag */
+.autocert-confidence-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+/* Toast Notifications */
+.autocert-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1000000;
+  animation: autocertFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes autocertFadeIn {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}

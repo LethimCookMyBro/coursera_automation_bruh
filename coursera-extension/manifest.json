@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Coursera Auto-Cert Pro",
+  "version": "1.0.0",
+  "description": "All-in-one Coursera automation: Fast complete videos & readings, AI Quiz Solver with Gemini, and speed accelerator.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Coursera Auto-Cert Pro",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.coursera.org/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.coursera.org/*"
+      ],
+      "js": [
+        "stealth.js",
+        "gemini.js",
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected.js",
+        "icons/*"
+      ],
+      "matches": [
+        "https://*.coursera.org/*"
+      ]
+    }
+  ]
+}

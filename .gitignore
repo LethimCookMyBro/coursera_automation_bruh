@@ -1,0 +1,35 @@
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Cloned External Repositories & Temporary Code
+repos/
+scratch/
+temp/
+tmp/
+
+# Logs & System artifacts
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.system_generated/
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Node modules & build artifacts
+node_modules/
+dist/
+build/
+generate_icons.py
