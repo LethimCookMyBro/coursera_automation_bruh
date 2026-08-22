@@ -59,34 +59,70 @@ class StealthEngine {
     }
   }
 
-  // Simulate human-like mouse hover and click events
+  // Simulate human-like mouse hover and click events with full pointer sequence
   async simulateHumanClick(element) {
     if (!element) return;
+
+    const rect = element.getBoundingClientRect ? element.getBoundingClientRect() : { left: 100, top: 100, width: 20, height: 20 };
+    const clientX = Math.floor(rect.left + (rect.width / 2) + (Math.random() * 4 - 2));
+    const clientY = Math.floor(rect.top + (rect.height / 2) + (Math.random() * 4 - 2));
+
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX,
+      clientY,
+      screenX: clientX + 50,
+      screenY: clientY + 100,
+      buttons: 1
+    };
 
     // 1. Dwell / Hover
     if (this.enabled) {
       try {
-        element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-        element.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        if (typeof PointerEvent !== 'undefined') {
+          element.dispatchEvent(new PointerEvent('pointerenter', eventInit));
+          element.dispatchEvent(new PointerEvent('pointerover', eventInit));
+        }
+        element.dispatchEvent(new MouseEvent('mouseover', eventInit));
+        element.dispatchEvent(new MouseEvent('mouseenter', eventInit));
       } catch (e) {}
       await this.wait(this.getOptionDwellTime());
     }
 
-    // 2. Sequential pointer and click events
+    // 2. Sequential pointer, focus and click events
     try {
-      element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-      element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      if (typeof PointerEvent !== 'undefined') {
+        element.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+      }
+      element.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      
+      if (typeof element.focus === 'function') {
+        element.focus();
+      }
+
+      if (typeof PointerEvent !== 'undefined') {
+        element.dispatchEvent(new PointerEvent('pointerup', eventInit));
+      }
+      element.dispatchEvent(new MouseEvent('mouseup', eventInit));
       element.click();
-      element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-      element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
       
       if (element.tagName === 'INPUT') {
-        element.checked = true;
+        // Safe React 18 checked setter
+        if (element.type === 'radio' || element.type === 'checkbox') {
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement?.prototype || {}, 'checked')?.set;
+          if (nativeSetter) {
+            nativeSetter.call(element, true);
+          } else {
+            element.checked = true;
+          }
+        }
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
       }
     } catch (e) {
-      element.click();
+      try { element.click(); } catch (err) {}
     }
   }
 }

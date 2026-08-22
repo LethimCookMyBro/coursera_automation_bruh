@@ -5,19 +5,19 @@
   function getUserId() {
     try {
       if (window.App?.context?.dispatcher?.stores?.ApplicationStore?.userData?.id) {
-        return window.App.context.dispatcher.stores.ApplicationStore.userData.id;
+        return String(window.App.context.dispatcher.stores.ApplicationStore.userData.id);
       }
     } catch (e) {}
 
     try {
       if (window.__INITIAL_DATA__?.user?.id) {
-        return window.__INITIAL_DATA__.user.id;
+        return String(window.__INITIAL_DATA__.user.id);
       }
     } catch (e) {}
 
     try {
       const match = document.cookie.match(/__204u=([^;]+)/);
-      if (match) return match[1];
+      if (match) return String(match[1]);
     } catch (e) {}
 
     return null;
@@ -29,8 +29,9 @@
 
     const path = window.location.pathname;
     const parts = path.split('/').filter(Boolean);
-    if (parts[0] === 'learn' && parts[1]) {
-      slug = parts[1];
+    const learnIdx = parts.indexOf('learn');
+    if (learnIdx !== -1 && parts[learnIdx + 1]) {
+      slug = parts[learnIdx + 1];
     }
 
     try {
@@ -80,5 +81,5 @@
       type: 'USER_INFO_RESPONSE',
       data: info
     }, '*');
-  }, 1000);
+  }, 500);
 })();

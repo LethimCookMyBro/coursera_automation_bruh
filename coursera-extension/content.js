@@ -93,6 +93,47 @@
     return null;
   }
 
+  // Request User Info with Promise and Timeout to prevent race conditions
+  async function getUserInfoWithTimeout(timeoutMs = 2500) {
+    if (userInfo.userId) return userInfo;
+
+    return new Promise(resolve => {
+      let resolved = false;
+
+      const handler = (event) => {
+        if (event.source !== window || !event.data || event.data.source !== 'AUTOCERT_PAGE') return;
+        if (event.data.type === 'USER_INFO_RESPONSE') {
+          const data = event.data.data;
+          if (data.userId) userInfo.userId = data.userId;
+          if (data.slug) userInfo.slug = data.slug;
+          if (data.courseId) userInfo.courseId = data.courseId;
+          updateWidgetStatus();
+          if (!resolved) {
+            resolved = true;
+            window.removeEventListener('message', handler);
+            resolve(userInfo);
+          }
+        }
+      };
+
+      window.addEventListener('message', handler);
+      window.postMessage({ source: 'AUTOCERT_CONTENT', type: 'GET_USER_INFO' }, '*');
+
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          window.removeEventListener('message', handler);
+          // Fallback: try reading cookie directly
+          const cookieMatch = document.cookie.match(/__204u=([^;]+)/);
+          if (cookieMatch && !userInfo.userId) {
+            userInfo.userId = cookieMatch[1];
+          }
+          resolve(userInfo);
+        }
+      }, timeoutMs);
+    });
+  }
+
   // Inject Bridge Script to access page context
   function injectPageBridge() {
     const script = document.createElement('script');
@@ -113,9 +154,7 @@
     });
 
     // Request user info
-    setTimeout(() => {
-      window.postMessage({ source: 'AUTOCERT_CONTENT', type: 'GET_USER_INFO' }, '*');
-    }, 500);
+    getUserInfoWithTimeout(1500);
   }
 
   // SPA Navigation listener (Coursera client-side routing)
@@ -125,7 +164,7 @@
       const currentUrl = location.href;
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
-        window.postMessage({ source: 'AUTOCERT_CONTENT', type: 'GET_USER_INFO' }, '*');
+        getUserInfoWithTimeout(1000);
         setTimeout(checkAndRunAutoPilot, 1200);
       }
     }).observe(document, { subtree: true, childList: true });
@@ -429,6 +468,7 @@
           await stealthEngine.wait(2500);
           window.location.href = nextUrl;
         } else {
+          // All quizzes completed!
           state.active = false;
           await setAutoPilotState(state);
           showToast('🎉 [Auto-Pilot] ทำข้อสอบทุกชุดใน Module ครบเรียบร้อยแล้ว!');
@@ -482,18 +522,15 @@
   async function bypassCurrentModule(skipReload = false) {
     await loadSettings();
 
-    // 1. Resolve User ID
-    if (!userInfo.userId) {
-      window.postMessage({ source: 'AUTOCERT_CONTENT', type: 'GET_USER_INFO' }, '*');
-      await new Promise(r => setTimeout(r, 600));
-    }
+    // 1. Resolve User ID with asynchronous timeout
+    const user = await getUserInfoWithTimeout(2000);
 
-    if (!userInfo.userId) {
+    if (!user || !user.userId) {
       showToast('❌ ไม่พบ User ID กรุณารีเฟรชหน้าเว็บหรือล็อกอินใหม่');
       return { success: false, error: 'User ID not found' };
     }
 
-    const numUserId = parseInt(userInfo.userId, 10);
+    const numUserId = parseInt(user.userId, 10);
     const csrf = getCsrfToken();
 
     // Headers with CSRF & Coursera App tokens
@@ -508,8 +545,8 @@
     const videoItems = [];
     const readingItems = [];
     const discussionItems = [];
-    let detectedSlug = userInfo.slug;
-    let detectedCourseId = userInfo.courseId;
+    let detectedSlug = user.slug;
+    let detectedCourseId = user.courseId;
 
     if (!detectedSlug) {
       const parts = window.location.pathname.split('/').filter(Boolean);
@@ -564,7 +601,7 @@
     // A. Complete Videos
     for (const id of videoItems) {
       try {
-        const url = `https://www.coursera.org/api/opencourse.v1/user/${numUserId || userInfo.userId}/course/${detectedSlug}/item/${id}/lecture/videoEvents/ended?autoEnroll=false`;
+        const url = `https://www.coursera.org/api/opencourse.v1/user/${numUserId || user.userId}/course/${detectedSlug}/item/${id}/lecture/videoEvents/ended?autoEnroll=false`;
         await fetch(url, {
           method: 'POST',
           credentials: 'include',
@@ -596,13 +633,13 @@
           headers: standardHeaders,
           body: JSON.stringify({
             userId: numUserId,
-            courseId: detectedCourseId || userInfo.courseId,
+            courseId: detectedCourseId || user.courseId,
             itemId: id
           })
         });
 
         if (!res1.ok) {
-          await fetch(`https://www.coursera.org/api/opencourse.v1/user/${numUserId || userInfo.userId}/course/${detectedSlug}/item/${id}/supplement/events/completed?autoEnroll=false`, {
+          await fetch(`https://www.coursera.org/api/opencourse.v1/user/${numUserId || user.userId}/course/${detectedSlug}/item/${id}/supplement/events/completed?autoEnroll=false`, {
             method: 'POST',
             credentials: 'include',
             headers: standardHeaders,
@@ -634,7 +671,7 @@
           headers: standardHeaders,
           body: JSON.stringify({
             userId: numUserId,
-            courseId: detectedCourseId || userInfo.courseId,
+            courseId: detectedCourseId || user.courseId,
             itemId: id
           })
         });
@@ -692,7 +729,8 @@
       let promptText = '';
       if (container) {
         const clone = container.cloneNode(true);
-        clone.querySelectorAll('input, label, [role="radio"], [role="checkbox"], .autocert-confidence-tag, button').forEach(el => el.remove());
+        // Only remove option labels, not question legend/header labels
+        clone.querySelectorAll('input, label[for], [role="radio"], [role="checkbox"], .autocert-confidence-tag, button').forEach(el => el.remove());
         promptText = clone.innerText.trim().replace(/\b\d+\s*points?\b/gi, '').trim();
       }
 
@@ -738,7 +776,7 @@
     }
 
     // 2. Group Checkbox Inputs (Multiple Select)
-    const checkboxInputs = document.querySelectorAll('input[type="checkbox"]:not([name*="honor"]):not([aria-label*="Honor"]):not([aria-label*="agree"])');
+    const checkboxInputs = document.querySelectorAll('input[type="checkbox"]:not([name*="honor"]):not([aria-label*="Honor"]):not([aria-label*="agree"]):not([aria-label*="understand"])');
     const checkboxGroups = {};
 
     checkboxInputs.forEach(input => {
@@ -755,7 +793,7 @@
       let promptText = '';
       if (container) {
         const clone = container.cloneNode(true);
-        clone.querySelectorAll('input, label, .autocert-confidence-tag, button').forEach(el => el.remove());
+        clone.querySelectorAll('input, label[for], .autocert-confidence-tag, button').forEach(el => el.remove());
         promptText = clone.innerText.trim().replace(/\b\d+\s*points?\b/gi, '').trim();
       }
       if (!promptText || promptText.length < 4) {
@@ -901,14 +939,28 @@
             const sel = q.optionElements[0];
             sel.selectedIndex = targetIndices[0];
             sel.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (q.type === 'multiple') {
+            // Multi-Select: Synchronize checked states cleanly
+            for (let optIdx = 0; optIdx < q.optionElements.length; optIdx++) {
+              const target = q.optionElements[optIdx];
+              const shouldBeChecked = targetIndices.includes(optIdx);
+              if (shouldBeChecked && !target.checked) {
+                await stealthEngine.simulateHumanClick(target);
+              } else if (!shouldBeChecked && target.checked) {
+                await stealthEngine.simulateHumanClick(target);
+              }
+              const parentBox = target.closest('label') || target.parentElement;
+              if (parentBox && shouldBeChecked) {
+                parentBox.classList.add('autocert-option-selected');
+              }
+            }
           } else {
-            // Select Answers with simulated human click
+            // Single Choice: Select Answer with simulated human click
             for (const idx of targetIndices) {
               if (q.optionElements[idx]) {
                 const target = q.optionElements[idx];
                 await stealthEngine.simulateHumanClick(target);
 
-                // Visual highlight
                 const parentBox = target.closest('label') || target.parentElement;
                 if (parentBox) {
                   parentBox.classList.add('autocert-option-selected');

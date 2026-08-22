@@ -16,6 +16,19 @@ class GeminiQuizSolver {
     this.model = model || 'gemini-flash-latest';
   }
 
+  // HTML Entity Decoder to prevent prompt distortion
+  decodeHtmlEntities(str = '') {
+    if (!str) return '';
+    return str
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&#x2F;/gi, '/');
+  }
+
   async testConnection() {
     if (!this.apiKey) {
       throw new Error('API Key is missing');
@@ -44,7 +57,7 @@ class GeminiQuizSolver {
         });
 
         if (res.ok) {
-          this.model = mod; // Switch to the working model
+          this.model = mod;
           return `เชื่อมต่อสำเร็จ (ใช้โมเดล: ${mod})`;
         } else {
           const err = await res.json().catch(() => ({}));
@@ -63,10 +76,13 @@ class GeminiQuizSolver {
       throw new Error('กรุณาระบุ Gemini API Key ในหน้า Settings ก่อนใช้งาน');
     }
 
+    const cleanPrompt = this.decodeHtmlEntities(questionPrompt);
+    const cleanOptions = (options || []).map(opt => this.decodeHtmlEntities(opt));
+
     const modelsToTry = [this.model, ...this.fallbackModels.filter(m => m !== this.model)];
     let lastError = null;
 
-    const formattedOptions = options.map((opt, idx) => `[${idx}] ${opt}`).join('\n');
+    const formattedOptions = cleanOptions.map((opt, idx) => `[${idx}] ${opt}`).join('\n');
     const isMultiple = questionType === 'multiple';
 
     const systemInstruction = `You are an expert academic tutor helping solve multiple-choice quiz questions accurately.
@@ -87,7 +103,7 @@ Notes:
 
     const userContent = `Course Context: ${courseContext || 'General Course'}
 Question:
-${questionPrompt}
+${cleanPrompt}
 
 Options:
 ${formattedOptions}`;
@@ -107,7 +123,8 @@ ${formattedOptions}`;
     };
 
     // Try primary and fallback models with backoff
-    for (const mod of modelsToTry) {
+    for (let attempt = 0; attempt < modelsToTry.length; attempt++) {
+      const mod = modelsToTry[attempt];
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${mod}:generateContent?key=${this.apiKey}`;
 
       try {
@@ -121,10 +138,10 @@ ${formattedOptions}`;
           const err = await res.json().catch(() => ({}));
           const errMsg = err.error?.message || `HTTP ${res.status}`;
           
-          // If rate limited or high demand (503/429), try next fallback model
           if (res.status === 429 || res.status === 503 || errMsg.includes('demand') || errMsg.includes('quota')) {
             console.warn(`[Auto-Cert] Model ${mod} busy/rate-limited, trying fallback...`);
-            await new Promise(r => setTimeout(r, 400));
+            const backoff = 400 + Math.floor(Math.random() * 300);
+            await new Promise(r => setTimeout(r, backoff));
             continue;
           }
           throw new Error(errMsg);
@@ -149,13 +166,31 @@ ${formattedOptions}`;
           }
         }
 
-        const parsed = JSON.parse(cleanJson);
-        return {
-          selected_indices: Array.isArray(parsed.selected_indices) ? parsed.selected_indices : [],
-          confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.9,
-          explanation: parsed.explanation || '',
-          modelUsed: mod
-        };
+        try {
+          const parsed = JSON.parse(cleanJson);
+          return {
+            selected_indices: Array.isArray(parsed.selected_indices) ? parsed.selected_indices : [],
+            confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.9,
+            explanation: parsed.explanation || '',
+            modelUsed: mod
+          };
+        } catch (jsonErr) {
+          // Fallback regex extractor if JSON has unescaped strings
+          const indicesMatch = cleanJson.match(/"selected_indices"\s*:\s*\[([^\]]*)\]/);
+          if (indicesMatch) {
+            const indices = indicesMatch[1]
+              .split(',')
+              .map(s => parseInt(s.trim(), 10))
+              .filter(n => !isNaN(n));
+            return {
+              selected_indices: indices,
+              confidence: 0.9,
+              explanation: 'Extracted via fallback parser',
+              modelUsed: mod
+            };
+          }
+          throw jsonErr;
+        }
       } catch (e) {
         lastError = e;
       }
@@ -166,6 +201,7 @@ ${formattedOptions}`;
 
   // Generate reflective essay / short answer for Self-Reviews & written prompts
   async generateReflectionAnswer(promptText, topic = '') {
+    const cleanPrompt = this.decodeHtmlEntities(promptText);
     const modelsToTry = [
       this.model,
       'gemini-flash-latest',
@@ -180,7 +216,7 @@ ${formattedOptions}`;
         {
           role: 'user',
           parts: [
-            { text: `${systemPrompt}\n\nCourse/Topic: ${topic}\n\nAssignment Prompt:\n${promptText}` }
+            { text: `${systemPrompt}\n\nCourse/Topic: ${topic}\n\nAssignment Prompt:\n${cleanPrompt}` }
           ]
         }
       ],
