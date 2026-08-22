@@ -679,6 +679,38 @@
     return questions;
   }
 
+  // React 18 Synthetic Event & Controlled Component Resolver
+  function forceReactCheckboxToggle(inputElement, targetState = true) {
+    if (!inputElement) return;
+    try { inputElement.focus(); } catch (e) {}
+
+    // 1. Bypass React's overridden property setter
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement?.prototype || {}, 'checked')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(inputElement, targetState);
+    } else {
+      inputElement.checked = targetState;
+    }
+
+    // 2. React Value Tracker notification
+    if (inputElement._valueTracker) {
+      inputElement._valueTracker.setValue(!targetState);
+    }
+
+    // 3. Dispatch complete synthetic event sequence
+    inputElement.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    inputElement.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    inputElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+    inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+    inputElement.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+    inputElement.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+  }
+
+  function forceReactRadioSelect(inputElement) {
+    forceReactCheckboxToggle(inputElement, true);
+  }
+
   // --- 6. Verification Loops (Zero Fire-and-Forget) ---
   async function checkHonorCode() {
     let checkbox = null;
@@ -727,13 +759,8 @@
       try { checkbox.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
       await stealthEngine.wait(400);
 
-      const parentLabel = checkbox.closest('label') || checkbox.parentElement;
-      if (parentLabel && parentLabel !== checkbox) parentLabel.click();
-
-      checkbox.click();
-      checkbox.checked = true;
-      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-      checkbox.dispatchEvent(new Event('input', { bubbles: true }));
+      // Trigger full React Synthetic toggle
+      forceReactCheckboxToggle(checkbox, true);
       await stealthEngine.wait(400);
     }
 
@@ -768,6 +795,84 @@
       }
     }
     return null;
+  }
+
+  // Multi-Stage Self-Review Orchestrator (Prompt -> Rubrics -> Submit)
+  async function solveSelfReviewMultiStage() {
+    showToast('🤖 กำลังดำเนินการ Self-Review แบบ Multi-Stage...');
+    let stageAttempts = 0;
+
+    while (stageAttempts < 10) {
+      // 1. Stage 1: Text Inputs (Reflection / Prompt)
+      const textInputs = document.querySelectorAll('textarea, div[contenteditable="true"], .ProseMirror');
+      if (textInputs.length > 0) {
+        const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
+        const promptText = promptEl ? promptEl.innerText.trim() : document.title;
+
+        for (const inputEl of textInputs) {
+          const currentText = inputEl.value || inputEl.innerText || '';
+          if (currentText.trim().length < 5) {
+            const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
+            await fillSmartTextInput(inputEl, answer);
+            await stealthEngine.wait(600);
+          }
+        }
+      }
+
+      // 2. Stage 2: Check Rubrics (Radio / Checkbox Criteria)
+      const rubrics = document.querySelectorAll('input[type="checkbox"]:not([name*="honor"]):not([aria-label*="Honor"]):not([aria-label*="agree"]):not([aria-label*="understand"]), input[type="radio"], [role="radio"]');
+      if (rubrics.length > 0) {
+        const radioGroups = {};
+        rubrics.forEach(r => {
+          if (r.type === 'radio' || r.getAttribute('role') === 'radio') {
+            const grp = r.name || r.closest('fieldset')?.id || 'rubric_grp';
+            if (!radioGroups[grp]) radioGroups[grp] = [];
+            radioGroups[grp].push(r);
+          } else if (r.type === 'checkbox') {
+            forceReactCheckboxToggle(r, true);
+          }
+        });
+
+        // Select full points / Yes option for every rubric criteria group
+        for (const [grpName, grpRadios] of Object.entries(radioGroups)) {
+          const targetRadio = grpRadios[grpRadios.length - 1];
+          if (targetRadio) {
+            forceReactRadioSelect(targetRadio);
+            await stealthEngine.wait(150);
+          }
+        }
+      }
+
+      // 3. Stage 3: Check if Submit button is active or if Next button is present
+      const submitBtn = findSubmitButton();
+      if (submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true') {
+        await checkHonorCode();
+        await stealthEngine.wait(500);
+        const verified = await submitQuizWithPositiveVerification(12000);
+        if (verified) return true;
+      }
+
+      // If Next / Continue / Review button is present, click it to advance to next stage
+      const nextStepBtn = Array.from(document.querySelectorAll('button')).find(b => {
+        const t = b.innerText.trim().toLowerCase();
+        return (t === 'next' || t === 'continue' || t === 'review' || t === 'ถัดไป' || t === 'review my submission') && !t.includes('retake') && !t.includes('cancel');
+      });
+
+      if (nextStepBtn && !nextStepBtn.disabled && nextStepBtn.getAttribute('aria-disabled') !== 'true') {
+        await stealthEngine.simulateHumanClick(nextStepBtn);
+        await stealthEngine.wait(1500);
+      } else {
+        await checkHonorCode();
+        const verified = await submitQuizWithPositiveVerification(10000);
+        if (verified) return true;
+        break;
+      }
+
+      stageAttempts++;
+      await new Promise(r => setTimeout(r, 800));
+    }
+
+    return checkPagePassingStatus();
   }
 
   async function submitQuizWithPositiveVerification(maxWaitMs = 12000) {
@@ -1050,52 +1155,13 @@
           }
         }
 
-        // B. Check for Self-Review (Written reflection / Textarea)
+        // B. Check for Self-Review (Written reflection / Textarea / Rubrics)
         const textInputs = document.querySelectorAll('textarea, div[contenteditable="true"], .ProseMirror');
-        if (textInputs.length > 0 && !isQuizPage()) {
-          showToast(`🤖 [Auto-Pilot] กำลังเขียนคำตอบ Self-Review (${state.currentIndex + 1}/${state.quizUrls.length})...`);
-          const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
-          const promptText = promptEl ? promptEl.innerText.trim() : document.title;
-
-          for (const inputEl of textInputs) {
-            const currentText = inputEl.value || inputEl.innerText || '';
-            if (currentText.trim().length < 5) {
-              const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
-              await fillSmartTextInput(inputEl, answer);
-              await stealthEngine.wait(800);
-            }
-          }
-
-          // Next Step button
-          const nextStepBtn = Array.from(document.querySelectorAll('button')).find(b => {
-            const t = b.innerText.trim().toLowerCase();
-            return t === 'next' || t === 'continue' || t === 'review' || t === 'ถัดไป';
-          });
-          if (nextStepBtn) {
-            await stealthEngine.simulateHumanClick(nextStepBtn);
-            
-            // Wait dynamically for Rubrics to mount
-            let rubricAttempts = 0;
-            while (rubricAttempts < 10) {
-              const rubricsFound = document.querySelectorAll('input[type="checkbox"], input[type="radio"], [role="radio"], [role="checkbox"]');
-              if (rubricsFound.length > 0) break;
-              await stealthEngine.wait(500);
-              rubricAttempts++;
-            }
-          }
-
-          // Check all rubrics
-          const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
-          for (const r of rubrics) {
-            if (!r.checked) {
-              await stealthEngine.simulateHumanClick(r);
-              await stealthEngine.wait(200);
-            }
-          }
-
-          // Positive Submit Verification
-          await submitQuizWithPositiveVerification(12000);
-          await stealthEngine.wait(3000);
+        const hasRubrics = !!document.querySelector('[class*="rubric" i], [data-testid*="rubric" i], [class*="Criterion" i]');
+        if ((textInputs.length > 0 || hasRubrics) && !isQuizPage()) {
+          showToast(`🤖 [Auto-Pilot] กำลังทำ Self-Review (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+          await solveSelfReviewMultiStage();
+          await stealthEngine.wait(2000);
 
           // Advance state
           state.currentIndex++;
@@ -1107,6 +1173,8 @@
             state.active = false;
             state.currentState = FSM_STATES.FINALIZING_MODULE;
             await setAutoPilotState(state);
+            showToast('🎉 [Auto-Pilot] กำลังปลดล็อกและเก็บตก Exemplar...');
+            await bypassCurrentModule(true);
             showToast('🎉 [Auto-Pilot] ทำข้อสอบและแบบฝึกหัดครบเรียบร้อยแล้ว!');
             if (state.moduleUrl) window.location.href = state.moduleUrl;
           }
@@ -1152,18 +1220,14 @@
                     for (let optIdx = 0; optIdx < q.optionElements.length; optIdx++) {
                       const target = q.optionElements[optIdx];
                       const shouldBeChecked = targetIndices.includes(optIdx);
-                      if (shouldBeChecked && !target.checked) {
-                        await stealthEngine.simulateHumanClick(target);
-                      } else if (!shouldBeChecked && target.checked) {
-                        await stealthEngine.simulateHumanClick(target);
-                      }
+                      forceReactCheckboxToggle(target, shouldBeChecked);
                       if (shouldBeChecked) target.closest('label')?.classList.add('autocert-option-selected');
                     }
                   } else {
                     for (const idx of targetIndices) {
                       if (q.optionElements[idx]) {
                         const target = q.optionElements[idx];
-                        await stealthEngine.simulateHumanClick(target);
+                        forceReactRadioSelect(target);
                         target.closest('label')?.classList.add('autocert-option-selected');
                       }
                     }
@@ -1202,6 +1266,8 @@
               state.active = false;
               state.currentState = FSM_STATES.FINALIZING_MODULE;
               await setAutoPilotState(state);
+              showToast('🎉 [Auto-Pilot] ปลดล็อกและเก็บตก Exemplar ที่ปลดล็อกแล้ว...');
+              await bypassCurrentModule(true);
               showToast('🎉 [Auto-Pilot] ทำข้อสอบทุกชุดใน Module ครบเรียบร้อยแล้ว!');
               setWidgetStatusText('🎉 จบ Module สมบูรณ์แล้ว');
               await stealthEngine.wait(2500);
@@ -1283,12 +1349,11 @@
             for (let optIdx = 0; optIdx < q.optionElements.length; optIdx++) {
               const target = q.optionElements[optIdx];
               const shouldBeChecked = targetIndices.includes(optIdx);
-              if (shouldBeChecked && !target.checked) await stealthEngine.simulateHumanClick(target);
-              else if (!shouldBeChecked && target.checked) await stealthEngine.simulateHumanClick(target);
+              forceReactCheckboxToggle(target, shouldBeChecked);
             }
           } else {
             for (const idx of targetIndices) {
-              if (q.optionElements[idx]) await stealthEngine.simulateHumanClick(q.optionElements[idx]);
+              if (q.optionElements[idx]) forceReactRadioSelect(q.optionElements[idx]);
             }
           }
           solvedCount++;
