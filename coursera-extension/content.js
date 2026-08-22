@@ -328,7 +328,57 @@
     return false;
   }
 
-  // --- 4. High-Fidelity Page Classifier & DOM Parsers ---
+  // --- 4. High-Fidelity Page Classifier & Dual-Layer Completion Parsers ---
+  function extractItemIdFromHref(href = '') {
+    if (!href) return '';
+    const parts = href.split('/').filter(Boolean);
+    const learnIdx = parts.indexOf('learn');
+    if (learnIdx !== -1 && parts[learnIdx + 3]) {
+      return parts[learnIdx + 3];
+    }
+    return '';
+  }
+
+  function isItemAlreadyCompleted(rowElement, href = '') {
+    if (!rowElement && !href) return false;
+
+    // 1. API / Redux Store Verification Layer
+    const itemId = extractItemIdFromHref(href);
+    if (itemId && userInfo.completedItemIds && userInfo.completedItemIds.includes(itemId)) {
+      return true;
+    }
+
+    if (!rowElement) return false;
+
+    // 2. DOM Checkmarks and SVG Badges Layer
+    const checkmark = rowElement.querySelector(
+      '.rc-CompletedIcon, ' +
+      'svg[data-testid*="completed" i], ' +
+      'svg[data-testid*="check" i], ' +
+      'svg[class*="complete" i], ' +
+      '[aria-label*="Completed" i], ' +
+      '[aria-label*="Passed" i], ' +
+      '[data-e2e*="completed" i]'
+    );
+    if (checkmark) return true;
+
+    // 3. Text Grade & Passed Status Layer
+    const rowText = (rowElement.innerText || '').toLowerCase();
+    if (
+      rowText.includes('grade: 100%') ||
+      rowText.includes('grade received: 100%') ||
+      rowText.includes('submitted • grade: 100%') ||
+      rowText.includes('passed') ||
+      rowText.includes('ผ่านแล้ว')
+    ) {
+      if (!rowText.includes('grade: --') && !rowText.includes('started • grade: --')) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function isQuizPage() {
     const path = window.location.pathname;
     if (path.includes('/lecture/') || path.includes('/supplement/') || path.includes('/discussionPrompt/')) {
@@ -347,17 +397,19 @@
     );
   }
 
-  function isAlreadyPassedPage() {
+  function checkPagePassingStatus() {
     const text = (document.body?.innerText || '').toLowerCase();
-    const hasPassedBadge = text.includes('congratulations! you passed') || 
-                           text.includes('you passed') || 
-                           text.includes('grade received: 100%') || 
-                           text.includes('you received a grade') ||
-                           text.includes('graded: 100%') ||
-                           text.includes('submitted');
+    const hasPassedBadge = (
+      text.includes('congratulations! you passed') || 
+      text.includes('you passed') || 
+      text.includes('grade received: 100%') || 
+      text.includes('you received a grade') ||
+      text.includes('you achieved a passing grade') ||
+      text.includes('graded: 100%')
+    );
 
     const hasActiveQuestions = !!(
-      document.querySelector('input[type="radio"]:not([disabled]), textarea:not([disabled])')
+      document.querySelector('input[type="radio"]:not([disabled]), textarea:not([disabled]), [role="radio"]:not([aria-disabled="true"])')
     );
 
     return hasPassedBadge && !hasActiveQuestions;
@@ -369,9 +421,20 @@
       return null;
     }
 
+    // Guard: If page is already passed, NEVER click retake
+    if (checkPagePassingStatus()) {
+      console.log('[Auto-Cert FSM Guard] Page already passed with passing score, blocking Start/Retake button');
+      return null;
+    }
+
     const candidates = document.querySelectorAll('button, a[role="button"], a.cds-button');
     for (const btn of candidates) {
       const txt = btn.innerText.trim().toLowerCase();
+      // Block retake buttons
+      if (txt.includes('retake') || txt.includes('try again') || txt.includes('สอบใหม่')) {
+        continue;
+      }
+
       if (
         txt === 'resume' ||
         txt === 'start' ||
@@ -389,11 +452,11 @@
     return null;
   }
 
-  // Discover Quiz & Assignment URLs in current module
+  // Discover Quiz & Assignment URLs in current module with Pre-filtering
   function findModuleQuizLinks() {
     const links = [];
 
-    // 1. Direct Anchors
+    // 1. Direct Anchors with Parent Row Check
     const anchors = document.querySelectorAll('a[href*="/assignment-submission/"], a[href*="/exam/"], a[href*="/quiz/"], a[href*="/gradedLti/"], a[href*="/ungradedLti/"]');
     anchors.forEach(a => {
       let href = a.getAttribute('href') || '';
@@ -402,7 +465,10 @@
       const isQuizUrl = cleanHref.includes('/assignment-submission/') || cleanHref.includes('/exam/') || cleanHref.includes('/quiz/') || cleanHref.includes('/gradedLti/') || cleanHref.includes('/ungradedLti/');
       const isExcluded = cleanHref.includes('/lecture/') || cleanHref.includes('/supplement/') || cleanHref.includes('/discussionPrompt/') || cleanHref.includes('/home/');
       
-      if (cleanHref && isQuizUrl && !isExcluded && !links.includes(cleanHref)) {
+      const parentRow = a.closest('li, div[data-testid*="item"], div[class*="ItemRow"], div[class*="cds-"]');
+      const isCompleted = isItemAlreadyCompleted(parentRow, cleanHref);
+
+      if (cleanHref && isQuizUrl && !isExcluded && !isCompleted && !links.includes(cleanHref)) {
         links.push(cleanHref);
       }
     });
@@ -410,11 +476,10 @@
     // 2. Row Containers
     const rows = document.querySelectorAll('li, div[data-testid*="item"], div[class*="ItemRow"], div[class*="cds-"]');
     rows.forEach(row => {
-      const rowText = (row.innerText || '').toLowerCase();
-      const isCompleted = !!row.querySelector('.rc-CompletedIcon, svg[data-testid="completed"], svg[data-testid*="completed"], [aria-label*="Completed"], [aria-label*="completed"], [data-e2e*="completed"]') ||
-                          rowText.includes('submitted') || rowText.includes('grade: 100%') || rowText.includes('completed') || rowText.includes('ผ่านแล้ว');
+      const isCompleted = isItemAlreadyCompleted(row);
 
       if (!isCompleted) {
+        const rowText = (row.innerText || '').toLowerCase();
         if (
           rowText.includes('practice assignment') ||
           rowText.includes('graded assignment') ||
@@ -741,7 +806,7 @@
     while (Date.now() - startTime < maxWaitMs) {
       await new Promise(r => setTimeout(r, 600));
 
-      if (isAlreadyPassedPage()) {
+      if (checkPagePassingStatus()) {
         console.log('[Auto-Cert FSM] Positive Verification: Pass banner detected!');
         return true;
       }
@@ -936,9 +1001,10 @@
     console.log(`[Auto-Cert FSM] Entering State Engine. Current State: ${state.currentState || 'INIT'}, Index: ${state.currentIndex}/${state.quizUrls?.length}`);
 
     try {
-      // 1. Already Passed Check
-      if (isAlreadyPassedPage()) {
-        showToast('✅ ข้อสอบชุดนี้ผ่านเรียบร้อยแล้ว กำลังเปลี่ยนไปยังชุดถัดไป...');
+      // 1. In-flight Passed Target Guard (Zero Retakes on Passed Quizzes)
+      if (checkPagePassingStatus()) {
+        showToast('✅ ตรวจพบข้อสอบชุดนี้สอบผ่านแล้ว (Passed/100%) ข้ามไปยังชุดถัดไป...');
+        console.log('[Auto-Cert FSM Guard] In-flight check: Target is already passed, advancing to next...');
         state.currentIndex++;
         if (state.currentIndex < state.quizUrls.length) {
           state.currentState = FSM_STATES.NAVIGATING_TARGET;

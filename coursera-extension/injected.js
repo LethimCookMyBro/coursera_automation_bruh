@@ -39,6 +39,45 @@
     return '';
   }
 
+  function getItemProgresses() {
+    const completedItems = new Set();
+    
+    // 1. Check ProgressStore
+    try {
+      const progressStore = window.App?.context?.dispatcher?.stores?.ProgressStore;
+      if (progressStore?.itemProgresses) {
+        Object.entries(progressStore.itemProgresses).forEach(([id, prog]) => {
+          if (prog?.isCompleted || prog?.state === 'COMPLETED' || prog?.state === 'PASSED' || (prog?.grade && prog.grade >= (prog.passingFraction || 0.7))) {
+            completedItems.add(id);
+          }
+        });
+      }
+    } catch (e) {}
+
+    // 2. Check CourseStore / Materials
+    try {
+      const courseStore = window.App?.context?.dispatcher?.stores?.CourseStore;
+      if (courseStore?.course?.materials?.itemProgresses) {
+        Object.entries(courseStore.course.materials.itemProgresses).forEach(([id, prog]) => {
+          if (prog?.isCompleted || prog?.state === 'COMPLETED' || prog?.state === 'PASSED') {
+            completedItems.add(id);
+          }
+        });
+      }
+    } catch (e) {}
+
+    // 3. Check __INITIAL_DATA__
+    try {
+      if (window.__INITIAL_DATA__?.progress?.itemProgresses) {
+        Object.entries(window.__INITIAL_DATA__.progress.itemProgresses).forEach(([id, prog]) => {
+          if (prog?.isCompleted || prog?.state === 'COMPLETED') completedItems.add(id);
+        });
+      }
+    } catch (e) {}
+
+    return Array.from(completedItems);
+  }
+
   function getCourseData() {
     let slug = '';
     let courseId = '';
@@ -74,7 +113,8 @@
       slug, 
       courseId, 
       userId: getUserId(),
-      fullName: getUserFullName()
+      fullName: getUserFullName(),
+      completedItemIds: getItemProgresses()
     };
   }
 
@@ -98,7 +138,8 @@
             data: {
               url,
               status: response.status,
-              body: data
+              body: data,
+              completedItemIds: getItemProgresses()
             }
           }, '*');
         }).catch(() => {});
