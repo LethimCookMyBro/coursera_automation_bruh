@@ -218,6 +218,7 @@
     return !!(
       document.querySelector('input[type="radio"], input[type="checkbox"]') ||
       document.querySelector('textarea, div[contenteditable="true"]') ||
+      document.querySelector('select') ||
       document.querySelector('[data-testid="quiz-question"]') ||
       document.querySelector('.rc-FormPartsQuestion') ||
       document.querySelector('[class*="QuizQuestion"]') ||
@@ -225,6 +226,15 @@
       window.location.pathname.includes('/attempt') ||
       window.location.pathname.includes('/exam/') ||
       window.location.pathname.includes('/quiz/')
+    );
+  }
+
+  // Check if current page is an already-passed quiz result page
+  function isAlreadyPassedPage() {
+    const text = (document.body?.innerText || '').toLowerCase();
+    return (
+      (text.includes('congratulations! you passed') || text.includes('you passed') || text.includes('grade received: 100%') || text.includes('you received a grade')) &&
+      !document.querySelector('input[type="radio"], textarea')
     );
   }
 
@@ -269,7 +279,8 @@
     const rows = document.querySelectorAll('li, div[data-testid*="item"], div[class*="ItemRow"], div[class*="cds-"]');
     rows.forEach(row => {
       const rowText = (row.innerText || '').toLowerCase();
-      const isCompleted = !!row.querySelector('.rc-CompletedIcon, svg[data-testid="completed"], [aria-label*="Completed"], [aria-label*="completed"]');
+      const isCompleted = !!row.querySelector('.rc-CompletedIcon, svg[data-testid="completed"], svg[data-testid*="completed"], [aria-label*="Completed"], [aria-label*="completed"], [data-e2e*="completed"]') ||
+                          rowText.includes('completed') || rowText.includes('ผ่านแล้ว');
 
       if (!isCompleted) {
         if (
@@ -314,53 +325,16 @@
     setWidgetStatusText('พร้อมทำงาน');
   }
 
-  // Check and run Auto-Pilot actions on page load
+  // Check and run Auto-Pilot actions on page load with smart dynamic retry
   async function checkAndRunAutoPilot() {
     const state = await getAutoPilotState();
     if (!state || !state.active) return;
 
     console.log('[Auto-Cert Auto-Pilot] Active state:', state);
 
-    // 1. Check if we are on Quiz Splash Page (looking for Start / Resume button)
-    const startBtn = findStartResumeButton();
-    if (startBtn && !isQuizPage()) {
-      showToast(`🚀 [Auto-Pilot] ข้อสอบที่ ${state.currentIndex + 1}/${state.quizUrls.length}: กำลังกดเริ่มทำ...`);
-      setWidgetStatusText(`🚀 Auto-Pilot: กำลังเปิดเข้าสู่หน้าข้อสอบ...`);
-      await stealthEngine.wait(1800);
-      await stealthEngine.simulateHumanClick(startBtn);
-      return;
-    }
-
-    // 2. Check if we are on Self-Review / Textarea Assignment Page
-    const textareas = document.querySelectorAll('textarea, div[contenteditable="true"]');
-    if (textareas.length > 0 && !isQuizPage()) {
-      showToast(`🤖 [Auto-Pilot] กำลังเขียนคำตอบ Self-Review ด้วย Gemini...`);
-      const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
-      const promptText = promptEl ? promptEl.innerText.trim() : document.title;
-      
-      for (const ta of textareas) {
-        if (!ta.value || ta.value.length < 5) {
-          const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
-          ta.value = answer;
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          ta.dispatchEvent(new Event('change', { bubbles: true }));
-          await stealthEngine.wait(800);
-        }
-      }
-
-      // Check all rubric criteria checkboxes
-      const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
-      for (const r of rubrics) {
-        if (!r.checked) {
-          await stealthEngine.simulateHumanClick(r);
-          await stealthEngine.wait(200);
-        }
-      }
-
-      await submitQuizSafely();
-      await stealthEngine.wait(4000);
-      
-      // Advance to next quiz
+    // If currently on an already passed result screen, advance immediately
+    if (isAlreadyPassedPage()) {
+      showToast('✅ ข้อสอบชุดนี้ผ่านแล้ว กำลังไปยังชุดถัดไป...');
       state.currentIndex++;
       if (state.currentIndex < state.quizUrls.length) {
         await setAutoPilotState(state);
@@ -368,40 +342,107 @@
       } else {
         state.active = false;
         await setAutoPilotState(state);
-        showToast('🎉 [Auto-Pilot] ทำข้อสอบและแบบฝึกหัดครบเรียบร้อยแล้ว!');
         if (state.moduleUrl) window.location.href = state.moduleUrl;
       }
       return;
     }
 
-    // 3. Check if we are on Quiz Attempt Page (solving questions)
-    if (isQuizPage()) {
-      showToast(`🤖 [Auto-Pilot] กำลังวิเคราะห์และทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
-      await stealthEngine.wait(2000);
-
-      await solveCurrentQuiz();
-
-      // After quiz is solved and submitted, wait for confirmation and transition to next
-      await stealthEngine.wait(4000);
-
-      state.currentIndex++;
-      if (state.currentIndex < state.quizUrls.length) {
-        await setAutoPilotState(state);
-        const nextUrl = state.quizUrls[state.currentIndex];
-        showToast(`🚀 [Auto-Pilot] ไปยังข้อสอบชุดถัดไป (${state.currentIndex + 1}/${state.quizUrls.length})...`);
-        await stealthEngine.wait(2500);
-        window.location.href = nextUrl;
-      } else {
-        // All quizzes completed!
-        state.active = false;
-        await setAutoPilotState(state);
-        showToast('🎉 [Auto-Pilot] ทำข้อสอบทุกชุดใน Module ครบเรียบร้อยแล้ว!');
-        setWidgetStatusText('🎉 จบ Module สมบูรณ์แล้ว');
-        await stealthEngine.wait(3000);
-        if (state.moduleUrl) {
-          window.location.href = state.moduleUrl;
-        }
+    // Dynamic polling loop: wait up to 8 seconds for page elements (React SPA rendering)
+    let attempts = 0;
+    while (attempts < 8) {
+      // 1. Check if Start / Resume button is present
+      const startBtn = findStartResumeButton();
+      if (startBtn && !isQuizPage()) {
+        showToast(`🚀 [Auto-Pilot] กำลังกดเริ่มทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+        setWidgetStatusText(`🚀 Auto-Pilot: กำลังเปิดเข้าสู่หน้าข้อสอบ...`);
+        await stealthEngine.wait(1600);
+        await stealthEngine.simulateHumanClick(startBtn);
+        return;
       }
+
+      // 2. Check if Self-Review / Textarea is present
+      const textareas = document.querySelectorAll('textarea, div[contenteditable="true"]');
+      if (textareas.length > 0 && !isQuizPage()) {
+        showToast(`🤖 [Auto-Pilot] กำลังเขียนคำตอบ Self-Review ด้วย Gemini...`);
+        const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
+        const promptText = promptEl ? promptEl.innerText.trim() : document.title;
+        
+        for (const ta of textareas) {
+          if (!ta.value || ta.value.length < 5) {
+            const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
+            ta.value = answer;
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            ta.dispatchEvent(new Event('change', { bubbles: true }));
+            await stealthEngine.wait(800);
+          }
+        }
+
+        // Check if there is a "Next" / "Continue" step button
+        const nextStepBtn = Array.from(document.querySelectorAll('button')).find(b => {
+          const t = b.innerText.trim().toLowerCase();
+          return t === 'next' || t === 'continue' || t === 'review' || t === 'ถัดไป';
+        });
+        if (nextStepBtn) {
+          await stealthEngine.simulateHumanClick(nextStepBtn);
+          await stealthEngine.wait(1500);
+        }
+
+        // Check all rubric criteria checkboxes
+        const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
+        for (const r of rubrics) {
+          if (!r.checked) {
+            await stealthEngine.simulateHumanClick(r);
+            await stealthEngine.wait(200);
+          }
+        }
+
+        await submitQuizSafely();
+        await stealthEngine.wait(4000);
+        
+        // Advance to next quiz
+        state.currentIndex++;
+        if (state.currentIndex < state.quizUrls.length) {
+          await setAutoPilotState(state);
+          window.location.href = state.quizUrls[state.currentIndex];
+        } else {
+          state.active = false;
+          await setAutoPilotState(state);
+          showToast('🎉 [Auto-Pilot] ทำข้อสอบและแบบฝึกหัดครบเรียบร้อยแล้ว!');
+          if (state.moduleUrl) window.location.href = state.moduleUrl;
+        }
+        return;
+      }
+
+      // 3. Check if standard quiz questions are present
+      if (isQuizPage()) {
+        showToast(`🤖 [Auto-Pilot] กำลังวิเคราะห์และทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+        await stealthEngine.wait(2000);
+
+        await solveCurrentQuiz();
+        await stealthEngine.wait(4000);
+
+        state.currentIndex++;
+        if (state.currentIndex < state.quizUrls.length) {
+          await setAutoPilotState(state);
+          const nextUrl = state.quizUrls[state.currentIndex];
+          showToast(`🚀 [Auto-Pilot] ไปยังข้อสอบชุดถัดไป (${state.currentIndex + 1}/${state.quizUrls.length})...`);
+          await stealthEngine.wait(2500);
+          window.location.href = nextUrl;
+        } else {
+          state.active = false;
+          await setAutoPilotState(state);
+          showToast('🎉 [Auto-Pilot] ทำข้อสอบทุกชุดใน Module ครบเรียบร้อยแล้ว!');
+          setWidgetStatusText('🎉 จบ Module สมบูรณ์แล้ว');
+          await stealthEngine.wait(3000);
+          if (state.moduleUrl) {
+            window.location.href = state.moduleUrl;
+          }
+        }
+        return;
+      }
+
+      attempts++;
+      await new Promise(r => setTimeout(r, 800));
     }
   }
 
@@ -757,6 +798,24 @@
       }
     }
 
+    // 3. Dropdown Selects (Fill in the blank / Matching)
+    const selectElements = document.querySelectorAll('select');
+    selectElements.forEach((sel, idx) => {
+      const parent = sel.closest('fieldset, [data-testid="quiz-question"], .rc-FormPartsQuestion') || sel.parentElement;
+      const promptText = parent ? parent.innerText.split('\n')[0] : `Dropdown Question ${idx + 1}`;
+      const options = Array.from(sel.options).map(o => o.text.trim()).filter(t => t && !t.toLowerCase().includes('select'));
+      
+      if (options.length >= 2) {
+        questions.push({
+          container: parent,
+          prompt: promptText,
+          options,
+          optionElements: [sel],
+          type: 'select'
+        });
+      }
+    });
+
     return questions;
   }
 
@@ -787,7 +846,7 @@
         return { success: true, count: 0, autoPilot: true };
       }
 
-      showToast('⚠️ ไม่พบโจทย์ข้อสอบในหน้านี้ (ตรวจไม่พบ Radio/Checkbox)');
+      showToast('⚠️ ไม่พบโจทย์ข้อสอบในหน้านี้');
       return { success: false, error: 'No questions found' };
     }
 
@@ -838,16 +897,22 @@
         }
 
         if (targetIndices.length > 0) {
-          // Select Answers with simulated human click
-          for (const idx of targetIndices) {
-            if (q.optionElements[idx]) {
-              const target = q.optionElements[idx];
-              await stealthEngine.simulateHumanClick(target);
+          if (q.type === 'select' && q.optionElements[0]) {
+            const sel = q.optionElements[0];
+            sel.selectedIndex = targetIndices[0];
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            // Select Answers with simulated human click
+            for (const idx of targetIndices) {
+              if (q.optionElements[idx]) {
+                const target = q.optionElements[idx];
+                await stealthEngine.simulateHumanClick(target);
 
-              // Visual highlight
-              const parentBox = target.closest('label') || target.parentElement;
-              if (parentBox) {
-                parentBox.classList.add('autocert-option-selected');
+                // Visual highlight
+                const parentBox = target.closest('label') || target.parentElement;
+                if (parentBox) {
+                  parentBox.classList.add('autocert-option-selected');
+                }
               }
             }
           }
@@ -1020,7 +1085,7 @@
     return null;
   }
 
-  // --- FEATURE 3: Floating UI Widget ---
+  // --- FEATURE 3: Floating UI Widget with Clean Modern HUD ---
   function injectFloatingWidget() {
     if (document.getElementById('autocert-floating-widget')) return;
 
@@ -1030,11 +1095,15 @@
       <div class="autocert-panel" id="autocertPanel">
         <div class="autocert-header" id="autocertHeader">
           <div class="autocert-brand">
-            <div class="autocert-logo">⚡</div>
+            <div class="autocert-logo">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+              </svg>
+            </div>
             <div class="autocert-title">Auto-Cert Pro</div>
           </div>
           <div class="autocert-controls">
-            <button class="autocert-btn-icon" id="autocertCancelBtn" title="ยกเลิก Auto-Pilot" style="font-size: 11px;">🛑</button>
+            <button class="autocert-btn-icon" id="autocertCancelBtn" title="ยกเลิก Auto-Pilot">🛑</button>
             <button class="autocert-btn-icon" id="autocertMinimizeBtn" title="ย่อ/ขยาย">—</button>
           </div>
         </div>
@@ -1051,7 +1120,7 @@
           
           <div class="autocert-speed-section">
             <div class="autocert-speed-label">
-              <span>ความเร็ววิดีโอ</span>
+              <span>Video Acceleration</span>
               <span id="autocertCurrentSpeedLabel">${settings.autoSpeed}x</span>
             </div>
             <div class="autocert-speed-buttons">
@@ -1066,7 +1135,7 @@
             <div class="autocert-progress-fill" id="autocertProgressFill"></div>
           </div>
 
-          <div class="autocert-status-text" id="autocertStatusText">พร้อมทำงาน (Stealth Active)</div>
+          <div class="autocert-status-text" id="autocertStatusText">Ready • Stealth Active</div>
         </div>
       </div>
     `;
@@ -1102,21 +1171,21 @@
 
     autoPilotBtn.addEventListener('click', async () => {
       autoPilotBtn.disabled = true;
-      statusText.innerText = 'กำลังเริ่ม Auto-Pilot ทั้ง Module...';
+      statusText.innerText = 'Starting Full Auto-Pilot...';
       await startFullAutoPilot();
       autoPilotBtn.disabled = false;
     });
 
     bypassBtn.addEventListener('click', async () => {
       bypassBtn.disabled = true;
-      statusText.innerText = 'กำลังประมวลผล...';
+      statusText.innerText = 'Bypassing items...';
       await bypassCurrentModule(false);
       bypassBtn.disabled = false;
     });
 
     quizBtn.addEventListener('click', async () => {
       quizBtn.disabled = true;
-      statusText.innerText = 'กำลังวิเคราะห์ข้อสอบ...';
+      statusText.innerText = 'Solving with Gemini AI...';
       await solveCurrentQuiz();
       quizBtn.disabled = false;
     });
@@ -1141,7 +1210,7 @@
   function updateWidgetStatus() {
     const statusEl = document.getElementById('autocertStatusText');
     if (statusEl && userInfo.userId) {
-      statusEl.innerText = `เชื่อมต่อ Coursera แล้ว (User: ${userInfo.userId}) • Stealth Active`;
+      statusEl.innerText = `Coursera Active (${userInfo.userId}) • Stealth`;
     }
   }
 
@@ -1154,7 +1223,7 @@
       bar.style.display = 'block';
       const pct = Math.round((current / total) * 100);
       fill.style.width = `${pct}%`;
-      if (statusEl) statusEl.innerText = `ดำเนินการ: ${current}/${total} (${pct}%)`;
+      if (statusEl) statusEl.innerText = `Progress: ${current}/${total} (${pct}%)`;
     }
   }
 
