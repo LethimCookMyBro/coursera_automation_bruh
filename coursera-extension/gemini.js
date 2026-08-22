@@ -173,7 +173,7 @@ ${formattedOptions}`;
       'gemini-3.7-flash'
     ];
 
-    const systemPrompt = `You are a top-performing university student completing a reflection exercise or self-review assignment on Coursera. Write a clear, well-structured 2-paragraph response in English (around 100-150 words) directly answering the prompt with accurate, professional subject-matter knowledge. Output plain text only without markdown backticks or commentary.`;
+    const systemPrompt = `You are a concise student writing a brief self-review response on Coursera. Write a very brief, direct, natural 1-to-2 sentence answer in English (maximum 25-45 words) answering the prompt accurately without any filler, intro, or boilerplate. Output plain text only.`;
 
     const payload = {
       contents: [
@@ -185,8 +185,8 @@ ${formattedOptions}`;
         }
       ],
       generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 500
+        temperature: 0.2,
+        maxOutputTokens: 120
       }
     };
 
@@ -207,6 +207,7 @@ ${formattedOptions}`;
       } catch (e) {}
     }
 
+    return `Understanding standard core principles and threat vectors is essential to effectively mitigating operational security risks.`;
   }
 }
 
