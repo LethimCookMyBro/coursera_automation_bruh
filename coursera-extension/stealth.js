@@ -43,16 +43,23 @@ class StealthEngine {
     return this.getJitter(8000, 15000);
   }
 
-  // Async sleep helper with optional progress callback
+  // Async sleep helper using drift-free monotonic clock (handles tab throttling gracefully)
   async wait(ms, onTick = null) {
     if (ms <= 0) return;
     
+    const startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const isPerformance = typeof performance !== 'undefined';
+
     if (onTick && ms > 1000) {
-      const startTime = Date.now();
-      while (Date.now() - startTime < ms) {
-        const remainingSec = Math.max(0, ((ms - (Date.now() - startTime)) / 1000)).toFixed(1);
+      while (true) {
+        const elapsed = isPerformance ? (performance.now() - startTime) : (Date.now() - startTime);
+        if (elapsed >= ms) break;
+
+        const remainingSec = Math.max(0, ((ms - elapsed) / 1000)).toFixed(1);
         onTick(remainingSec);
-        await new Promise(r => setTimeout(r, 200));
+        
+        // Use 250ms chunks to respect tab throttling if minimized
+        await new Promise(r => setTimeout(r, 250));
       }
     } else {
       await new Promise(r => setTimeout(r, ms));

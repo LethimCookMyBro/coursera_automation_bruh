@@ -7,7 +7,8 @@
   let userInfo = {
     userId: null,
     slug: '',
-    courseId: ''
+    courseId: '',
+    fullName: ''
   };
 
   let settings = {
@@ -23,10 +24,12 @@
   let geminiSolver = null;
   let stealthEngine = null;
   let floatingWidgetEl = null;
+  let keepAlivePort = null;
 
   // Initialize
   async function init() {
     await loadSettings();
+    initKeepAlivePort();
     injectPageBridge();
     setupMessageListeners();
     setupVideoObserver();
@@ -40,6 +43,28 @@
     setTimeout(() => {
       checkAndRunAutoPilot();
     }, 1500);
+  }
+
+  // Persistent Port Keep-Alive with Background Service Worker (MV3)
+  function initKeepAlivePort() {
+    try {
+      keepAlivePort = chrome.runtime.connect({ name: 'AUTOCERT_KEEP_ALIVE' });
+      keepAlivePort.onDisconnect.addListener(() => {
+        // Reconnect after brief pause if disconnected
+        setTimeout(initKeepAlivePort, 3000);
+      });
+
+      // Ping every 25 seconds to keep worker active during long tasks
+      setInterval(() => {
+        if (keepAlivePort) {
+          try {
+            keepAlivePort.postMessage({ type: 'PING' });
+          } catch (e) {}
+        }
+      }, 25000);
+    } catch (e) {
+      console.warn('[Auto-Cert] Keep-Alive port init failed:', e);
+    }
   }
 
   // Load Settings from chrome.storage
@@ -123,7 +148,6 @@
         if (!resolved) {
           resolved = true;
           window.removeEventListener('message', handler);
-          // Fallback: try reading cookie directly
           const cookieMatch = document.cookie.match(/__204u=([^;]+)/);
           if (cookieMatch && !userInfo.userId) {
             userInfo.userId = cookieMatch[1];
@@ -252,6 +276,57 @@
     showToast(`⚡ ตั้งค่าความเร็ววิดีโอเป็น ${speed}x`);
   }
 
+  // Universal Smart Text Input Resolver (Textarea, Input, & ContentEditable / ProseMirror)
+  async function fillSmartTextInput(element, text) {
+    if (!element || !text) return false;
+
+    try {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (e) {}
+    await stealthEngine.wait(300);
+
+    // 1. Standard HTML Textarea / Input
+    if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement?.prototype || window.HTMLInputElement?.prototype || {}, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(element, text);
+      } else {
+        element.value = text;
+      }
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    // 2. ContentEditable / ProseMirror / Draft.js / Slate Rich Text Editor
+    if (element.isContentEditable || element.getAttribute('contenteditable') === 'true' || element.classList.contains('ProseMirror')) {
+      element.focus();
+      
+      try {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand('delete', false, null);
+        document.execCommand('insertText', false, text);
+      } catch (e) {}
+
+      // Fallback if execCommand did not populate text
+      if (!element.innerText || element.innerText.trim().length === 0) {
+        element.innerText = text;
+        element.innerHTML = `<p>${text}</p>`;
+      }
+
+      element.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true }));
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    return false;
+  }
+
   // Check if current page is Quiz / Question Attempt / Self-Review
   function isQuizPage() {
     return !!(
@@ -273,7 +348,7 @@
     const text = (document.body?.innerText || '').toLowerCase();
     return (
       (text.includes('congratulations! you passed') || text.includes('you passed') || text.includes('grade received: 100%') || text.includes('you received a grade')) &&
-      !document.querySelector('input[type="radio"], textarea')
+      !document.querySelector('input[type="radio"], textarea, div[contenteditable="true"]')
     );
   }
 
@@ -314,7 +389,7 @@
       }
     });
 
-    // 2. Row Container lookup (For Practice Assignments, Self-reviews, Knowledge checks without direct quiz in URL)
+    // 2. Row Container lookup
     const rows = document.querySelectorAll('li, div[data-testid*="item"], div[class*="ItemRow"], div[class*="cds-"]');
     rows.forEach(row => {
       const rowText = (row.innerText || '').toLowerCase();
@@ -371,7 +446,6 @@
 
     console.log('[Auto-Cert Auto-Pilot] Active state:', state);
 
-    // If currently on an already passed result screen, advance immediately
     if (isAlreadyPassedPage()) {
       showToast('✅ ข้อสอบชุดนี้ผ่านแล้ว กำลังไปยังชุดถัดไป...');
       state.currentIndex++;
@@ -386,10 +460,8 @@
       return;
     }
 
-    // Dynamic polling loop: wait up to 8 seconds for page elements (React SPA rendering)
     let attempts = 0;
     while (attempts < 8) {
-      // 1. Check if Start / Resume button is present
       const startBtn = findStartResumeButton();
       if (startBtn && !isQuizPage()) {
         showToast(`🚀 [Auto-Pilot] กำลังกดเริ่มทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
@@ -399,24 +471,22 @@
         return;
       }
 
-      // 2. Check if Self-Review / Textarea is present
-      const textareas = document.querySelectorAll('textarea, div[contenteditable="true"]');
-      if (textareas.length > 0 && !isQuizPage()) {
+      // Self-Review / Textarea / ContentEditable Page
+      const textInputs = document.querySelectorAll('textarea, div[contenteditable="true"], .ProseMirror');
+      if (textInputs.length > 0 && !isQuizPage()) {
         showToast(`🤖 [Auto-Pilot] กำลังเขียนคำตอบ Self-Review ด้วย Gemini...`);
         const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
         const promptText = promptEl ? promptEl.innerText.trim() : document.title;
         
-        for (const ta of textareas) {
-          if (!ta.value || ta.value.length < 5) {
+        for (const inputEl of textInputs) {
+          const currentText = inputEl.value || inputEl.innerText || '';
+          if (currentText.trim().length < 5) {
             const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
-            ta.value = answer;
-            ta.dispatchEvent(new Event('input', { bubbles: true }));
-            ta.dispatchEvent(new Event('change', { bubbles: true }));
+            await fillSmartTextInput(inputEl, answer);
             await stealthEngine.wait(800);
           }
         }
 
-        // Check if there is a "Next" / "Continue" step button
         const nextStepBtn = Array.from(document.querySelectorAll('button')).find(b => {
           const t = b.innerText.trim().toLowerCase();
           return t === 'next' || t === 'continue' || t === 'review' || t === 'ถัดไป';
@@ -426,7 +496,6 @@
           await stealthEngine.wait(1500);
         }
 
-        // Check all rubric criteria checkboxes
         const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
         for (const r of rubrics) {
           if (!r.checked) {
@@ -438,7 +507,6 @@
         await submitQuizSafely();
         await stealthEngine.wait(4000);
         
-        // Advance to next quiz
         state.currentIndex++;
         if (state.currentIndex < state.quizUrls.length) {
           await setAutoPilotState(state);
@@ -452,7 +520,6 @@
         return;
       }
 
-      // 3. Check if standard quiz questions are present
       if (isQuizPage()) {
         showToast(`🤖 [Auto-Pilot] กำลังวิเคราะห์และทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
         await stealthEngine.wait(2000);
@@ -468,7 +535,6 @@
           await stealthEngine.wait(2500);
           window.location.href = nextUrl;
         } else {
-          // All quizzes completed!
           state.active = false;
           await setAutoPilotState(state);
           showToast('🎉 [Auto-Pilot] ทำข้อสอบทุกชุดใน Module ครบเรียบร้อยแล้ว!');
@@ -491,10 +557,8 @@
     await loadSettings();
     showToast('🚀 เริ่มต้น Full Auto-Pilot: กำลังข้ามวิดีโอ/อ่าน และเตรียมทำข้อสอบทั้งหมด...');
 
-    // Step 1: Complete videos & readings (skipReload: true to preserve execution flow)
     await bypassCurrentModule(true);
 
-    // Step 2: Discover quizzes & assignments in module
     const quizLinks = findModuleQuizLinks();
     if (quizLinks.length === 0) {
       showToast('✅ ไม่พบข้อสอบในหน้านี้ หรือเรียนจบครบแล้ว');
@@ -513,8 +577,6 @@
 
     await setAutoPilotState(state);
     await stealthEngine.wait(2000);
-
-    // Navigate seamlessly to first quiz without reload interruption
     window.location.href = quizLinks[0];
   }
 
@@ -522,7 +584,6 @@
   async function bypassCurrentModule(skipReload = false) {
     await loadSettings();
 
-    // 1. Resolve User ID with asynchronous timeout
     const user = await getUserInfoWithTimeout(2000);
 
     if (!user || !user.userId) {
@@ -533,7 +594,6 @@
     const numUserId = parseInt(user.userId, 10);
     const csrf = getCsrfToken();
 
-    // Headers with CSRF & Coursera App tokens
     const standardHeaders = {
       'Content-Type': 'application/json; charset=UTF-8',
       'X-Coursera-Application': 'ondemand',
@@ -541,7 +601,6 @@
       ...(csrf ? { 'X-CSRF3-Token': csrf, 'X-CSRF2-Token': csrf } : {})
     };
 
-    // 2. Discover Items in Module
     const videoItems = [];
     const readingItems = [];
     const discussionItems = [];
@@ -554,7 +613,6 @@
       if (idx !== -1 && parts[idx + 1]) detectedSlug = parts[idx + 1];
     }
 
-    // Scan links with data-click-value or standard Coursera navigation anchors
     const anchors = document.querySelectorAll('a[href*="/lecture/"], a[href*="/supplement/"], a[href*="/discussionPrompt/"], a[data-click-value]');
 
     anchors.forEach(a => {
@@ -583,7 +641,6 @@
       } catch (e) {}
     });
 
-    // Resolve courseId from Coursera API if missing
     if (!detectedCourseId && detectedSlug) {
       detectedCourseId = await resolveCourseId(detectedSlug);
     }
@@ -598,7 +655,7 @@
 
     let completed = 0;
 
-    // A. Complete Videos
+    // Videos
     for (const id of videoItems) {
       try {
         const url = `https://www.coursera.org/api/opencourse.v1/user/${numUserId || user.userId}/course/${detectedSlug}/item/${id}/lecture/videoEvents/ended?autoEnroll=false`;
@@ -624,7 +681,7 @@
       }
     }
 
-    // B. Complete Readings (Supplements)
+    // Readings (Supplements)
     for (const id of readingItems) {
       try {
         const res1 = await fetch(`https://www.coursera.org/api/onDemandSupplementCompletions.v1`, {
@@ -662,7 +719,7 @@
       }
     }
 
-    // C. Complete Discussion Prompts
+    // Discussion Prompts
     for (const id of discussionItems) {
       try {
         await fetch(`https://www.coursera.org/api/onDemandDiscussionPromptCompletions.v1`, {
@@ -685,7 +742,6 @@
 
     showToast(`✅ ข้ามเรียบร้อย ${completed} บทเรียนอย่างแนบเนียน!`);
     
-    // Only reload if NOT running inside Auto-Pilot chain
     if (!skipReload) {
       setTimeout(() => location.reload(), 1500);
     }
@@ -693,7 +749,7 @@
     return { success: true, count: completed };
   }
 
-  // --- FEATURE 2: Universal AI Quiz Solver with Gemini & Max Stealth ---
+  // --- FEATURE 2: Universal AI Quiz Solver with Virtualized Harvest ---
   function findQuizQuestions() {
     const questions = [];
 
@@ -729,7 +785,6 @@
       let promptText = '';
       if (container) {
         const clone = container.cloneNode(true);
-        // Only remove option labels, not question legend/header labels
         clone.querySelectorAll('input, label[for], [role="radio"], [role="checkbox"], .autocert-confidence-tag, button').forEach(el => el.remove());
         promptText = clone.innerText.trim().replace(/\b\d+\s*points?\b/gi, '').trim();
       }
@@ -836,7 +891,7 @@
       }
     }
 
-    // 3. Dropdown Selects (Fill in the blank / Matching)
+    // 3. Dropdown Selects
     const selectElements = document.querySelectorAll('select');
     selectElements.forEach((sel, idx) => {
       const parent = sel.closest('fieldset, [data-testid="quiz-question"], .rc-FormPartsQuestion') || sel.parentElement;
@@ -857,6 +912,34 @@
     return questions;
   }
 
+  // Progressive Scroll-and-Harvest to discover questions in virtualized long exams
+  async function harvestAllQuestionsProgressive() {
+    let questions = findQuizQuestions();
+    
+    // If questions found is small and document is tall, perform a progressive harvest scan
+    if (document.body.scrollHeight > window.innerHeight * 1.5) {
+      console.log('[Auto-Cert] Performing progressive scroll-and-harvest pass for virtualized DOM...');
+      const originalScroll = window.scrollY;
+      const scrollStep = Math.floor(window.innerHeight * 0.75);
+      
+      for (let y = 0; y < document.body.scrollHeight; y += scrollStep) {
+        window.scrollTo({ top: y, behavior: 'instant' });
+        await new Promise(r => setTimeout(r, 200));
+        
+        const currentBatch = findQuizQuestions();
+        if (currentBatch.length > questions.length) {
+          questions = currentBatch;
+        }
+      }
+
+      // Return to original scroll position
+      window.scrollTo({ top: originalScroll, behavior: 'smooth' });
+      await new Promise(r => setTimeout(r, 400));
+    }
+
+    return questions;
+  }
+
   async function solveCurrentQuiz() {
     await loadSettings();
 
@@ -865,10 +948,10 @@
       return { success: false, error: 'Missing Gemini API Key' };
     }
 
-    const questionItems = findQuizQuestions();
+    // Use progressive scroll-and-harvest to capture virtualized question items
+    const questionItems = await harvestAllQuestionsProgressive();
 
     if (questionItems.length === 0) {
-      // If no questions directly on page, check if we are on a module page that has quiz links!
       const quizLinks = findModuleQuizLinks();
       if (quizLinks.length > 0) {
         showToast(`🚀 ตรวจพบข้อสอบใน Module นี้ ${quizLinks.length} ชุด! เริ่ม Auto-Pilot ทันที...`);
@@ -890,7 +973,6 @@
 
     showToast(`🤖 พบโจทย์ ${questionItems.length} ข้อ เริ่มวิเคราะห์และทำข้อสอบโหมดพรางตัว...`);
 
-    // Pick 1 question for intentional imperfection if enabled
     const imperfectIndex = (settings.realisticGrades && questionItems.length >= 5) 
       ? Math.floor(Math.random() * (questionItems.length - 2)) + 1 
       : -1;
@@ -900,14 +982,12 @@
     for (let i = 0; i < questionItems.length; i++) {
       const q = questionItems[i];
 
-      // Smooth scroll to question
       try {
         if (q.container) {
           q.container.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
       } catch (e) {}
 
-      // Human-like reading delay before answering
       if (settings.stealthMode) {
         const readingDelay = stealthEngine.calculateReadingDelay(q.prompt);
         await stealthEngine.wait(readingDelay, (sec) => {
@@ -916,7 +996,6 @@
       }
 
       try {
-        // Call Gemini
         const result = await geminiSolver.solveQuestion(
           q.prompt,
           q.options,
@@ -926,7 +1005,6 @@
 
         let targetIndices = result.selected_indices || [];
 
-        // Apply realistic grade imperfection on 1 question if toggled
         if (i === imperfectIndex && targetIndices.length === 1 && q.options.length > 2) {
           const correctIdx = targetIndices[0];
           const distractorIdx = (correctIdx + 1) % q.options.length;
@@ -940,7 +1018,6 @@
             sel.selectedIndex = targetIndices[0];
             sel.dispatchEvent(new Event('change', { bubbles: true }));
           } else if (q.type === 'multiple') {
-            // Multi-Select: Synchronize checked states cleanly
             for (let optIdx = 0; optIdx < q.optionElements.length; optIdx++) {
               const target = q.optionElements[optIdx];
               const shouldBeChecked = targetIndices.includes(optIdx);
@@ -955,7 +1032,6 @@
               }
             }
           } else {
-            // Single Choice: Select Answer with simulated human click
             for (const idx of targetIndices) {
               if (q.optionElements[idx]) {
                 const target = q.optionElements[idx];
@@ -969,7 +1045,6 @@
             }
           }
 
-          // Add confidence tag
           if (q.container) {
             let tag = q.container.querySelector('.autocert-confidence-tag');
             if (!tag) {
@@ -992,13 +1067,12 @@
       await new Promise(r => setTimeout(r, 400));
     }
 
-    // 1. Check Honor Code checkbox
+    // Check Honor Code & Auto-fill Signature
     await checkHonorCode();
 
     showToast(`🎉 ทำข้อสอบเสร็จเรียบร้อย ${solvedCount}/${questionItems.length} ข้อ!`);
     setWidgetStatusText(`✅ ทำข้อสอบเสร็จสิ้น ${solvedCount}/${questionItems.length} ข้อ`);
 
-    // 2. Auto submit if enabled or running in Auto-Pilot
     const autoPilotState = await getAutoPilotState();
     const isAutoPilot = autoPilotState && autoPilotState.active;
 
@@ -1015,11 +1089,12 @@
     return { success: true, count: solvedCount };
   }
 
-  // Robust Honor Code Checkbox Handler (Matches Athena UI & standard checkboxes)
+  // Robust Honor Code Checkbox & Dynamic Identity Signature Auto-Fill
   async function checkHonorCode() {
     let checkbox = null;
+    let extractedFullName = userInfo.fullName || '';
 
-    // A. Specific search
+    // 1. Search for Checkbox
     checkbox = document.querySelector(
       'input[type="checkbox"][name*="honor"], ' +
       'input[type="checkbox"][id*="honor"], ' +
@@ -1028,7 +1103,6 @@
       'input[type="checkbox"][aria-label*="understand"]'
     );
 
-    // B. Search all checkboxes by container text
     if (!checkbox) {
       const allCheckboxes = document.querySelectorAll('input[type="checkbox"]');
       for (const cb of allCheckboxes) {
@@ -1043,12 +1117,18 @@
           text.includes('ยอมรับ')
         ) {
           checkbox = cb;
+          
+          // Extract User Full Name from text e.g. "I, John Doe, understand and agree..."
+          const match = (parent?.innerText || '').match(/I,\s*([A-Za-z\s]+?),\s*understand and agree/i);
+          if (match && match[1]) {
+            extractedFullName = match[1].trim();
+            userInfo.fullName = extractedFullName;
+          }
           break;
         }
       }
     }
 
-    // C. Fallback to the last checkbox on the page
     if (!checkbox) {
       const allCheckboxes = document.querySelectorAll('input[type="checkbox"]');
       if (allCheckboxes.length > 0) {
@@ -1078,6 +1158,24 @@
       await stealthEngine.wait(400);
     }
 
+    // 2. Check for Signature Text Field (Dynamic Identity)
+    if (extractedFullName) {
+      const signatureInputs = document.querySelectorAll(
+        'input[type="text"][placeholder*="name" i], ' +
+        'input[type="text"][aria-label*="name" i], ' +
+        'input[type="text"][id*="signature" i], ' +
+        'input[type="text"][name*="signature" i]'
+      );
+
+      for (const sigInput of signatureInputs) {
+        if (!sigInput.value || sigInput.value.trim().length === 0) {
+          console.log(`[Auto-Cert] Populating signature text field with identity: "${extractedFullName}"`);
+          await fillSmartTextInput(sigInput, extractedFullName);
+          await stealthEngine.wait(300);
+        }
+      }
+    }
+
     return checkbox;
   }
 
@@ -1092,7 +1190,6 @@
       return false;
     }
 
-    // If still disabled, re-trigger honor code click
     if (submitBtn.disabled || submitBtn.getAttribute('aria-disabled') === 'true') {
       console.log('[Auto-Cert] Submit button still disabled, re-checking honor code...');
       await checkHonorCode();
@@ -1107,7 +1204,6 @@
     await stealthEngine.simulateHumanClick(submitBtn);
     showToast('🚀 ส่งคำตอบเรียบร้อยแล้ว');
 
-    // Check for confirmation modal dialog popup
     await stealthEngine.wait(1200);
     const modalButtons = document.querySelectorAll('[role="dialog"] button, .rc-Modal button, div[class*="modal"] button');
     for (const mb of modalButtons) {
@@ -1194,7 +1290,6 @@
 
     document.body.appendChild(floatingWidgetEl);
 
-    // Event Bindings for Widget
     const panel = document.getElementById('autocertPanel');
     const minBtn = document.getElementById('autocertMinimizeBtn');
     const cancelBtn = document.getElementById('autocertCancelBtn');
@@ -1242,7 +1337,6 @@
       quizBtn.disabled = false;
     });
 
-    // Speed buttons
     document.querySelectorAll('.autocert-speed-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const speed = parseFloat(btn.getAttribute('data-speed'));
@@ -1279,7 +1373,6 @@
     }
   }
 
-  // Toast Notification System
   function showToast(message) {
     const existing = document.querySelector('.autocert-toast');
     if (existing) existing.remove();
@@ -1296,6 +1389,5 @@
     }, 4000);
   }
 
-  // Start initialization
   init();
 })();
