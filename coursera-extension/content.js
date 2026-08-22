@@ -63,36 +63,55 @@
     }, 1200);
   }
 
+  // Extension Context Validation Guard
+  function isExtensionValid() {
+    try {
+      return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Load Settings from chrome.storage
   async function loadSettings() {
+    if (!isExtensionValid()) return;
     return new Promise((resolve) => {
-      chrome.storage.local.get(['geminiApiKey', 'geminiModel', 'autoSpeed', 'autoSubmit', 'floatingWidgetEnabled', 'stealthMode', 'realisticGrades'], (res) => {
-        if (res.geminiApiKey) settings.geminiApiKey = res.geminiApiKey;
-        if (res.geminiModel) settings.geminiModel = res.geminiModel;
-        if (res.autoSpeed !== undefined) settings.autoSpeed = res.autoSpeed;
-        if (res.autoSubmit !== undefined) settings.autoSubmit = res.autoSubmit;
-        if (res.floatingWidgetEnabled !== undefined) settings.floatingWidgetEnabled = res.floatingWidgetEnabled;
-        if (res.stealthMode !== undefined) settings.stealthMode = res.stealthMode;
-        if (res.realisticGrades !== undefined) settings.realisticGrades = res.realisticGrades;
+      try {
+        chrome.storage.local.get(['geminiApiKey', 'geminiModel', 'autoSpeed', 'autoSubmit', 'floatingWidgetEnabled', 'stealthMode', 'realisticGrades'], (res) => {
+          if (chrome.runtime.lastError || !res) return resolve();
+          if (res.geminiApiKey) settings.geminiApiKey = res.geminiApiKey;
+          if (res.geminiModel) settings.geminiModel = res.geminiModel;
+          if (res.autoSpeed !== undefined) settings.autoSpeed = res.autoSpeed;
+          if (res.autoSubmit !== undefined) settings.autoSubmit = res.autoSubmit;
+          if (res.floatingWidgetEnabled !== undefined) settings.floatingWidgetEnabled = res.floatingWidgetEnabled;
+          if (res.stealthMode !== undefined) settings.stealthMode = res.stealthMode;
+          if (res.realisticGrades !== undefined) settings.realisticGrades = res.realisticGrades;
 
-        geminiSolver = new GeminiQuizSolver(settings.geminiApiKey, settings.geminiModel);
-        stealthEngine = new StealthEngine({
-          enabled: settings.stealthMode,
-          realisticGrades: settings.realisticGrades
+          geminiSolver = new GeminiQuizSolver(settings.geminiApiKey, settings.geminiModel);
+          stealthEngine = new StealthEngine({
+            enabled: settings.stealthMode,
+            realisticGrades: settings.realisticGrades
+          });
+          resolve();
         });
+      } catch (e) {
         resolve();
-      });
+      }
     });
   }
 
   // MV3 Port Keep-Alive
   function initKeepAlivePort() {
+    if (!isExtensionValid()) return;
     try {
       keepAlivePort = chrome.runtime.connect({ name: 'AUTOCERT_KEEP_ALIVE' });
       keepAlivePort.onDisconnect.addListener(() => {
-        setTimeout(initKeepAlivePort, 3000);
+        if (isExtensionValid()) {
+          setTimeout(initKeepAlivePort, 3000);
+        }
       });
       setInterval(() => {
+        if (!isExtensionValid()) return;
         if (keepAlivePort) {
           try { keepAlivePort.postMessage({ type: 'PING' }); } catch (e) {}
         }
@@ -388,6 +407,11 @@
 
   function isQuizPage() {
     const path = window.location.pathname;
+    // Feedback and submission review pages are NOT active quiz pages
+    if (path.includes('/view-feedback') || path.includes('/results') || path.includes('/attempt_summary') || path.includes('/feedback')) {
+      return false;
+    }
+
     if (path.includes('/lecture/') || path.includes('/supplement/') || path.includes('/discussionPrompt/')) {
       return !!document.querySelector('.rc-InVideoQuizPrompt');
     }
@@ -405,6 +429,11 @@
   }
 
   function checkPagePassingStatus() {
+    const path = window.location.pathname;
+    if (path.includes('/view-feedback') || path.includes('/results') || path.includes('/attempt_summary') || path.includes('/feedback')) {
+      return true;
+    }
+
     const text = (document.body?.innerText || '').toLowerCase();
     const hasPassedBadge = (
       text.includes('congratulations! you passed') || 
@@ -412,7 +441,8 @@
       text.includes('grade received: 100%') || 
       text.includes('you received a grade') ||
       text.includes('you achieved a passing grade') ||
-      text.includes('graded: 100%')
+      text.includes('graded: 100%') ||
+      text.includes('view feedback')
     );
 
     const hasActiveQuestions = !!(
@@ -1052,14 +1082,30 @@
 
   // --- 8. Core Finite State Machine (FSM) Engine ---
   async function getAutoPilotState() {
+    if (!isExtensionValid()) return null;
     return new Promise(resolve => {
-      chrome.storage.local.get(['autoPilotState'], res => resolve(res.autoPilotState || null));
+      try {
+        chrome.storage.local.get(['autoPilotState'], res => {
+          if (chrome.runtime.lastError) return resolve(null);
+          resolve(res?.autoPilotState || null);
+        });
+      } catch (e) {
+        resolve(null);
+      }
     });
   }
 
   async function setAutoPilotState(state) {
+    if (!isExtensionValid()) return;
     return new Promise(resolve => {
-      chrome.storage.local.set({ autoPilotState: state }, resolve);
+      try {
+        chrome.storage.local.set({ autoPilotState: state }, () => {
+          if (chrome.runtime.lastError) return resolve();
+          resolve();
+        });
+      } catch (e) {
+        resolve();
+      }
     });
   }
 
