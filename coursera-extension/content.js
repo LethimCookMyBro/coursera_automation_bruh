@@ -486,9 +486,25 @@
       if (startBtn && !isQuizPage()) {
         showToast(`🚀 [Auto-Pilot] กำลังกดเริ่มทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
         setWidgetStatusText(`🚀 Auto-Pilot: กำลังเปิดเข้าสู่หน้าข้อสอบ...`);
-        await stealthEngine.wait(1600);
+        await stealthEngine.wait(1000);
         await stealthEngine.simulateHumanClick(startBtn);
-        return;
+        
+        // Wait dynamically for questions or textarea to render after clicking start
+        let transitionAttempts = 0;
+        let transitioned = false;
+        while (transitionAttempts < 10) {
+          await new Promise(r => setTimeout(r, 800));
+          if (isQuizPage() || document.querySelector('textarea, div[contenteditable="true"], .ProseMirror, input[type="radio"], input[type="checkbox"]')) {
+            transitioned = true;
+            break;
+          }
+          transitionAttempts++;
+        }
+        
+        if (transitioned) {
+          console.log('[Auto-Cert Auto-Pilot] Transitioned into quiz attempt, proceeding to solve...');
+          continue;
+        }
       }
 
       // Self-Review / Textarea / ContentEditable Page
