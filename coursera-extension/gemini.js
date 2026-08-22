@@ -139,7 +139,7 @@ ${formattedOptions}`;
           const errMsg = err.error?.message || `HTTP ${res.status}`;
           
           if (res.status === 429 || res.status === 503 || errMsg.includes('demand') || errMsg.includes('quota')) {
-            console.warn(`[Auto-Cert] Model ${mod} busy/rate-limited, trying fallback...`);
+            console.log(`[Auto-Cert] Model ${mod} busy/rate-limited, trying fallback...`);
             const backoff = 400 + Math.floor(Math.random() * 300);
             await new Promise(r => setTimeout(r, backoff));
             continue;

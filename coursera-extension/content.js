@@ -334,17 +334,22 @@
 
   // Check if current page is Quiz / Question Attempt / Self-Review
   function isQuizPage() {
+    const path = window.location.pathname;
+    
+    // Explicitly exclude video lectures & reading supplements
+    if (path.includes('/lecture/') || path.includes('/supplement/') || path.includes('/discussionPrompt/')) {
+      return !!document.querySelector('.rc-InVideoQuizPrompt');
+    }
+
     return !!(
-      document.querySelector('input[type="radio"], input[type="checkbox"]') ||
-      document.querySelector('textarea, div[contenteditable="true"]') ||
-      document.querySelector('select') ||
+      path.includes('/attempt') ||
+      path.includes('/exam/') ||
+      path.includes('/quiz/') ||
+      path.includes('/assignment-submission/') ||
       document.querySelector('[data-testid="quiz-question"]') ||
       document.querySelector('.rc-FormPartsQuestion') ||
       document.querySelector('[class*="QuizQuestion"]') ||
-      document.querySelector('.rc-InVideoQuizPrompt') ||
-      window.location.pathname.includes('/attempt') ||
-      window.location.pathname.includes('/exam/') ||
-      window.location.pathname.includes('/quiz/')
+      document.querySelector('.rc-InVideoQuizPrompt')
     );
   }
 
@@ -359,6 +364,11 @@
 
   // Find Start / Resume Assignment Button
   function findStartResumeButton() {
+    const path = window.location.pathname;
+    if (path.includes('/lecture/') || path.includes('/supplement/') || path.includes('/discussionPrompt/')) {
+      return null;
+    }
+
     const candidates = document.querySelectorAll('button, a[role="button"], a.cds-button');
     for (const btn of candidates) {
       const txt = btn.innerText.trim().toLowerCase();
@@ -389,7 +399,10 @@
       let href = a.getAttribute('href') || '';
       if (href.startsWith('/')) href = 'https://www.coursera.org' + href;
       const cleanHref = href.split('?')[0].replace(/\/attempt\/?$/, '');
-      if (cleanHref && !links.includes(cleanHref)) {
+      const isQuizUrl = cleanHref.includes('/assignment-submission/') || cleanHref.includes('/exam/') || cleanHref.includes('/quiz/') || cleanHref.includes('/gradedLti/') || cleanHref.includes('/ungradedLti/');
+      const isExcluded = cleanHref.includes('/lecture/') || cleanHref.includes('/supplement/') || cleanHref.includes('/discussionPrompt/') || cleanHref.includes('/home/');
+      
+      if (cleanHref && isQuizUrl && !isExcluded && !links.includes(cleanHref)) {
         links.push(cleanHref);
       }
     });
@@ -406,15 +419,17 @@
           rowText.includes('practice assignment') ||
           rowText.includes('graded assignment') ||
           rowText.includes('self-review') ||
-          rowText.includes('knowledge check') ||
-          rowText.includes('resume')
+          rowText.includes('knowledge check')
         ) {
           const anchor = row.querySelector('a[href]');
           if (anchor) {
             let href = anchor.getAttribute('href') || '';
             if (href.startsWith('/')) href = 'https://www.coursera.org' + href;
             const cleanHref = href.split('?')[0].replace(/\/attempt\/?$/, '');
-            if (cleanHref && !links.includes(cleanHref) && !cleanHref.includes('/home/')) {
+            const isQuizUrl = cleanHref.includes('/assignment-submission/') || cleanHref.includes('/exam/') || cleanHref.includes('/quiz/') || cleanHref.includes('/gradedLti/') || cleanHref.includes('/ungradedLti/');
+            const isExcluded = cleanHref.includes('/lecture/') || cleanHref.includes('/supplement/') || cleanHref.includes('/discussionPrompt/') || cleanHref.includes('/home/');
+            
+            if (cleanHref && isQuizUrl && !isExcluded && !links.includes(cleanHref)) {
               links.push(cleanHref);
             }
           }
@@ -922,11 +937,16 @@
       }
     }
 
-    // 3. Dropdown Selects
+    // 3. Dropdown Selects (Fill in the blank / Matching inside Quiz only)
     const selectElements = document.querySelectorAll('select');
     selectElements.forEach((sel, idx) => {
-      const parent = sel.closest('fieldset, [data-testid="quiz-question"], .rc-FormPartsQuestion') || sel.parentElement;
-      const promptText = parent ? parent.innerText.split('\n')[0] : `Dropdown Question ${idx + 1}`;
+      // Ignore video resolution, subtitles, audio and playback control selects
+      if (sel.closest('.video-js, .vjs-control-bar, .rc-VideoPlayer, video, [class*="player"]')) return;
+      
+      const parent = sel.closest('fieldset, [data-testid="quiz-question"], .rc-FormPartsQuestion, [class*="QuizQuestion"]');
+      if (!parent) return; // Dropdowns must be inside a designated quiz question container
+
+      const promptText = parent.innerText.split('\n')[0] || `Dropdown Question ${idx + 1}`;
       const options = Array.from(sel.options).map(o => o.text.trim()).filter(t => t && !t.toLowerCase().includes('select'));
       
       if (options.length >= 2) {
