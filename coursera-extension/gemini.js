@@ -163,6 +163,51 @@ ${formattedOptions}`;
 
     throw lastError || new Error('All Gemini models failed');
   }
+
+  // Generate reflective essay / short answer for Self-Reviews & written prompts
+  async generateReflectionAnswer(promptText, topic = '') {
+    const modelsToTry = [
+      this.model,
+      'gemini-flash-latest',
+      'gemini-3.6-flash',
+      'gemini-3.7-flash'
+    ];
+
+    const systemPrompt = `You are a top-performing university student completing a reflection exercise or self-review assignment on Coursera. Write a clear, well-structured 2-paragraph response in English (around 100-150 words) directly answering the prompt with accurate, professional subject-matter knowledge. Output plain text only without markdown backticks or commentary.`;
+
+    const payload = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: `${systemPrompt}\n\nCourse/Topic: ${topic}\n\nAssignment Prompt:\n${promptText}` }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 500
+      }
+    };
+
+    for (const mod of modelsToTry) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${mod}:generateContent?key=${this.apiKey}`;
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) return text.trim();
+        }
+      } catch (e) {}
+    }
+
+  }
 }
 
 // Export for usage in content & popup

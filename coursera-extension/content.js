@@ -36,7 +36,7 @@
       injectFloatingWidget();
     }
 
-    // Check Auto-Pilot active state
+    // Check Auto-Pilot active state on load
     setTimeout(() => {
       checkAndRunAutoPilot();
     }, 1500);
@@ -135,7 +135,7 @@
   function setupMessageListeners() {
     chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       if (req.action === 'BYPASS_MODULE') {
-        bypassCurrentModule().then(res => sendResponse(res));
+        bypassCurrentModule(false).then(res => sendResponse(res));
         return true;
       } else if (req.action === 'SOLVE_QUIZ') {
         solveCurrentQuiz().then(res => sendResponse(res));
@@ -213,10 +213,11 @@
     showToast(`⚡ ตั้งค่าความเร็ววิดีโอเป็น ${speed}x`);
   }
 
-  // Check if current page is Quiz / Question Attempt
+  // Check if current page is Quiz / Question Attempt / Self-Review
   function isQuizPage() {
     return !!(
       document.querySelector('input[type="radio"], input[type="checkbox"]') ||
+      document.querySelector('textarea, div[contenteditable="true"]') ||
       document.querySelector('[data-testid="quiz-question"]') ||
       document.querySelector('.rc-FormPartsQuestion') ||
       document.querySelector('[class*="QuizQuestion"]') ||
@@ -249,10 +250,12 @@
     return null;
   }
 
-  // Discover Quiz URLs on current page
+  // Discover Quiz & Assignment URLs in current module
   function findModuleQuizLinks() {
     const links = [];
-    const anchors = document.querySelectorAll('a[href*="/assignment-submission/"], a[href*="/exam/"], a[href*="/quiz/"]');
+
+    // 1. Direct Anchor lookup
+    const anchors = document.querySelectorAll('a[href*="/assignment-submission/"], a[href*="/exam/"], a[href*="/quiz/"], a[href*="/gradedLti/"], a[href*="/ungradedLti/"]');
     anchors.forEach(a => {
       let href = a.getAttribute('href') || '';
       if (href.startsWith('/')) href = 'https://www.coursera.org' + href;
@@ -261,6 +264,34 @@
         links.push(cleanHref);
       }
     });
+
+    // 2. Row Container lookup (For Practice Assignments, Self-reviews, Knowledge checks without direct quiz in URL)
+    const rows = document.querySelectorAll('li, div[data-testid*="item"], div[class*="ItemRow"], div[class*="cds-"]');
+    rows.forEach(row => {
+      const rowText = (row.innerText || '').toLowerCase();
+      const isCompleted = !!row.querySelector('.rc-CompletedIcon, svg[data-testid="completed"], [aria-label*="Completed"], [aria-label*="completed"]');
+
+      if (!isCompleted) {
+        if (
+          rowText.includes('practice assignment') ||
+          rowText.includes('graded assignment') ||
+          rowText.includes('self-review') ||
+          rowText.includes('knowledge check') ||
+          rowText.includes('resume')
+        ) {
+          const anchor = row.querySelector('a[href]');
+          if (anchor) {
+            let href = anchor.getAttribute('href') || '';
+            if (href.startsWith('/')) href = 'https://www.coursera.org' + href;
+            const cleanHref = href.split('?')[0].replace(/\/attempt\/?$/, '');
+            if (cleanHref && !links.includes(cleanHref) && !cleanHref.includes('/home/')) {
+              links.push(cleanHref);
+            }
+          }
+        }
+      }
+    });
+
     return links;
   }
 
@@ -293,19 +324,62 @@
     // 1. Check if we are on Quiz Splash Page (looking for Start / Resume button)
     const startBtn = findStartResumeButton();
     if (startBtn && !isQuizPage()) {
-      showToast(`🚀 [Auto-Pilot] ข้อสอบที่ ${state.currentIndex + 1}/${state.quizUrls.length}: กำลังกดเริ่มทำข้อสอบ...`);
+      showToast(`🚀 [Auto-Pilot] ข้อสอบที่ ${state.currentIndex + 1}/${state.quizUrls.length}: กำลังกดเริ่มทำ...`);
       setWidgetStatusText(`🚀 Auto-Pilot: กำลังเปิดเข้าสู่หน้าข้อสอบ...`);
       await stealthEngine.wait(1800);
       await stealthEngine.simulateHumanClick(startBtn);
       return;
     }
 
-    // 2. Check if we are on Quiz Attempt Page (solving questions)
+    // 2. Check if we are on Self-Review / Textarea Assignment Page
+    const textareas = document.querySelectorAll('textarea, div[contenteditable="true"]');
+    if (textareas.length > 0 && !isQuizPage()) {
+      showToast(`🤖 [Auto-Pilot] กำลังเขียนคำตอบ Self-Review ด้วย Gemini...`);
+      const promptEl = document.querySelector('h1, h2, h3, [class*="prompt"], [class*="instruction"], [class*="title"]');
+      const promptText = promptEl ? promptEl.innerText.trim() : document.title;
+      
+      for (const ta of textareas) {
+        if (!ta.value || ta.value.length < 5) {
+          const answer = await geminiSolver.generateReflectionAnswer(promptText, userInfo.slug);
+          ta.value = answer;
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          await stealthEngine.wait(800);
+        }
+      }
+
+      // Check all rubric criteria checkboxes
+      const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
+      for (const r of rubrics) {
+        if (!r.checked) {
+          await stealthEngine.simulateHumanClick(r);
+          await stealthEngine.wait(200);
+        }
+      }
+
+      await submitQuizSafely();
+      await stealthEngine.wait(4000);
+      
+      // Advance to next quiz
+      state.currentIndex++;
+      if (state.currentIndex < state.quizUrls.length) {
+        await setAutoPilotState(state);
+        window.location.href = state.quizUrls[state.currentIndex];
+      } else {
+        state.active = false;
+        await setAutoPilotState(state);
+        showToast('🎉 [Auto-Pilot] ทำข้อสอบและแบบฝึกหัดครบเรียบร้อยแล้ว!');
+        if (state.moduleUrl) window.location.href = state.moduleUrl;
+      }
+      return;
+    }
+
+    // 3. Check if we are on Quiz Attempt Page (solving questions)
     if (isQuizPage()) {
       showToast(`🤖 [Auto-Pilot] กำลังวิเคราะห์และทำข้อสอบ (${state.currentIndex + 1}/${state.quizUrls.length})...`);
       await stealthEngine.wait(2000);
 
-      const solveRes = await solveCurrentQuiz();
+      await solveCurrentQuiz();
 
       // After quiz is solved and submitted, wait for confirmation and transition to next
       await stealthEngine.wait(4000);
@@ -336,13 +410,14 @@
     await loadSettings();
     showToast('🚀 เริ่มต้น Full Auto-Pilot: กำลังข้ามวิดีโอ/อ่าน และเตรียมทำข้อสอบทั้งหมด...');
 
-    // Step 1: Complete videos & readings
-    await bypassCurrentModule();
+    // Step 1: Complete videos & readings (skipReload: true to preserve execution flow)
+    await bypassCurrentModule(true);
 
-    // Step 2: Discover quizzes in module
+    // Step 2: Discover quizzes & assignments in module
     const quizLinks = findModuleQuizLinks();
     if (quizLinks.length === 0) {
       showToast('✅ ไม่พบข้อสอบในหน้านี้ หรือเรียนจบครบแล้ว');
+      setTimeout(() => location.reload(), 1500);
       return { success: true };
     }
 
@@ -358,12 +433,12 @@
     await setAutoPilotState(state);
     await stealthEngine.wait(2000);
 
-    // Navigate to first quiz
+    // Navigate seamlessly to first quiz without reload interruption
     window.location.href = quizLinks[0];
   }
 
   // --- FEATURE 1: Instant Bypass Module with Stealth Pacing ---
-  async function bypassCurrentModule() {
+  async function bypassCurrentModule(skipReload = false) {
     await loadSettings();
 
     // 1. Resolve User ID
@@ -531,6 +606,12 @@
     }
 
     showToast(`✅ ข้ามเรียบร้อย ${completed} บทเรียนอย่างแนบเนียน!`);
+    
+    // Only reload if NOT running inside Auto-Pilot chain
+    if (!skipReload) {
+      setTimeout(() => location.reload(), 1500);
+    }
+
     return { success: true, count: completed };
   }
 
@@ -690,7 +771,7 @@
     const questionItems = findQuizQuestions();
 
     if (questionItems.length === 0) {
-      // If no questions on this page, check if we are on a module page that has quiz links!
+      // If no questions directly on page, check if we are on a module page that has quiz links!
       const quizLinks = findModuleQuizLinks();
       if (quizLinks.length > 0) {
         showToast(`🚀 ตรวจพบข้อสอบใน Module นี้ ${quizLinks.length} ชุด! เริ่ม Auto-Pilot ทันที...`);
@@ -794,7 +875,7 @@
       await new Promise(r => setTimeout(r, 400));
     }
 
-    // 1. Check Honor Code checkbox (Always check regardless of autoSubmit)
+    // 1. Check Honor Code checkbox
     await checkHonorCode();
 
     showToast(`🎉 ทำข้อสอบเสร็จเรียบร้อย ${solvedCount}/${questionItems.length} ข้อ!`);
@@ -949,8 +1030,8 @@
       <div class="autocert-panel" id="autocertPanel">
         <div class="autocert-header" id="autocertHeader">
           <div class="autocert-brand">
-            <div class="autocert-logo">🥷</div>
-            <div class="autocert-title">Auto-Cert Stealth Pro</div>
+            <div class="autocert-logo">⚡</div>
+            <div class="autocert-title">Auto-Cert Pro</div>
           </div>
           <div class="autocert-controls">
             <button class="autocert-btn-icon" id="autocertCancelBtn" title="ยกเลิก Auto-Pilot" style="font-size: 11px;">🛑</button>
@@ -1029,7 +1110,7 @@
     bypassBtn.addEventListener('click', async () => {
       bypassBtn.disabled = true;
       statusText.innerText = 'กำลังประมวลผล...';
-      await bypassCurrentModule();
+      await bypassCurrentModule(false);
       bypassBtn.disabled = false;
     });
 
@@ -1084,7 +1165,7 @@
 
     const toast = document.createElement('div');
     toast.className = 'autocert-toast';
-    toast.innerHTML = `<span>🥷</span><span>${message}</span>`;
+    toast.innerHTML = `<span>⚡</span><span>${message}</span>`;
     document.body.appendChild(toast);
 
     setTimeout(() => {
