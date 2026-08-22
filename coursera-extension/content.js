@@ -244,6 +244,11 @@
       video.addEventListener('loadedmetadata', setSpeedSafely, { passive: true });
       video.addEventListener('canplay', setSpeedSafely, { passive: true });
       video.addEventListener('play', setSpeedSafely, { passive: true });
+      video.addEventListener('ratechange', () => {
+        if (settings.autoSpeed && video.playbackRate !== settings.autoSpeed) {
+          setTimeout(setSpeedSafely, 100);
+        }
+      }, { passive: true });
 
       if (video.readyState >= 1) {
         setSpeedSafely();
@@ -493,7 +498,15 @@
         });
         if (nextStepBtn) {
           await stealthEngine.simulateHumanClick(nextStepBtn);
-          await stealthEngine.wait(1500);
+          
+          // Wait dynamically up to 4s for rubric items to render in React
+          let rubricAttempts = 0;
+          while (rubricAttempts < 8) {
+            const rubricsFound = document.querySelectorAll('input[type="checkbox"], input[type="radio"], [role="radio"], [role="checkbox"]');
+            if (rubricsFound.length > 0) break;
+            await stealthEngine.wait(500);
+            rubricAttempts++;
+          }
         }
 
         const rubrics = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
