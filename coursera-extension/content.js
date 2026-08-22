@@ -215,6 +215,13 @@
       } else if (req.action === 'SET_SPEED') {
         setVideoSpeed(req.speed);
         sendResponse({ success: true });
+      } else if (req.action === 'SCAN_PENDING_ITEMS') {
+        const items = scanPendingModuleItems();
+        sendResponse({ success: true, items });
+        return true;
+      } else if (req.action === 'START_TARGETED_AUTOPILOT') {
+        startTargetedAutoPilot(req.urls).then(res => sendResponse(res));
+        return true;
       } else if (req.action === 'GET_STATUS') {
         sendResponse({
           userInfo,
@@ -1060,6 +1067,74 @@
     await setAutoPilotState(null);
     showToast('🛑 ยกเลิก Auto-Pilot แล้ว');
     setWidgetStatusText('พร้อมทำงาน');
+  }
+
+  function scanPendingModuleItems() {
+    const pendingItems = [];
+    const seenUrls = new Set();
+
+    const rows = document.querySelectorAll('li, div[data-testid*="item"], div[class*="ItemRow"], div[class*="cds-"]');
+    rows.forEach(row => {
+      const isCompleted = isItemAlreadyCompleted(row);
+      if (isCompleted) return;
+
+      const anchor = row.querySelector('a[href]');
+      if (!anchor) return;
+
+      let href = anchor.getAttribute('href') || '';
+      if (href.startsWith('/')) href = 'https://www.coursera.org' + href;
+      const cleanHref = href.split('?')[0].replace(/\/attempt\/?$/, '');
+
+      if (!cleanHref || seenUrls.has(cleanHref)) return;
+      if (cleanHref.includes('/home/')) return;
+
+      const rowText = (row.innerText || '').toLowerCase();
+      let type = 'Quiz';
+      if (cleanHref.includes('/lecture/') || rowText.includes('video')) type = 'Video';
+      else if (cleanHref.includes('/supplement/') || rowText.includes('reading')) type = 'Reading';
+      else if (cleanHref.includes('/discussionPrompt/') || rowText.includes('discussion')) type = 'Discussion';
+      else if (cleanHref.includes('/assignment-submission/') || rowText.includes('self-review') || rowText.includes('assignment')) type = 'Assignment';
+      else if (cleanHref.includes('/exam/') || cleanHref.includes('/quiz/') || rowText.includes('quiz') || rowText.includes('knowledge check')) type = 'Quiz';
+
+      let title = anchor.innerText.trim().split('\n')[0];
+      if (!title || title.length < 3) {
+        const titleEl = row.querySelector('h1, h2, h3, h4, [class*="title"], [class*="name"]');
+        title = titleEl ? titleEl.innerText.trim() : (row.innerText.split('\n')[0] || 'Module Item');
+      }
+
+      seenUrls.add(cleanHref);
+      pendingItems.push({
+        title,
+        url: cleanHref,
+        type
+      });
+    });
+
+    return pendingItems;
+  }
+
+  async function startTargetedAutoPilot(urls = []) {
+    if (!urls || urls.length === 0) {
+      showToast('⚠️ ไม่พบรายการที่เลือกสำหรับทำข้อสอบ');
+      return { success: false, error: 'No items selected' };
+    }
+
+    await loadSettings();
+    showToast(`🎯 เริ่ม Targeted Auto-Pilot: กำลังนำทางไปทำ ${urls.length} รายการที่เลือก...`);
+
+    const state = {
+      active: true,
+      currentState: FSM_STATES.NAVIGATING_TARGET,
+      moduleUrl: window.location.href,
+      quizUrls: urls,
+      currentIndex: 0
+    };
+
+    await setAutoPilotState(state);
+    await stealthEngine.wait(1000);
+
+    window.location.href = urls[0];
+    return { success: true, count: urls.length };
   }
 
   async function startFullAutoPilot() {

@@ -100,6 +100,41 @@
         </button>
       </div>
 
+      <!-- Pending Items Inspector Card -->
+      <div class="section-box pending-inspector-box" id="pendingInspectorSection">
+        <div class="section-header">
+          <div class="pending-header-left">
+            <span class="section-title">Pending Items Inspector</span>
+            <span class="badge-pending" id="pendingCountBadge">Ready to scan</span>
+          </div>
+          <button class="btn-mini-action" id="btnScanPending">🔍 สแกน</button>
+        </div>
+
+        <div class="pending-list-container" id="pendingListContainer" style="display: none;">
+          <div class="pending-select-all-row">
+            <label class="pending-checkbox-label">
+              <input type="checkbox" id="selectAllPending" checked>
+              <span>เลือกทั้งหมด (<span id="selectedCountDisplay">0</span>)</span>
+            </label>
+          </div>
+          <div class="pending-items-scrollbox" id="pendingItemsScrollbox">
+            <!-- Dynamic item checkboxes -->
+          </div>
+          <button class="btn btn-emerald btn-targeted-solve" id="btnTargetedSolve">
+            <div class="btn-icon">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <circle cx="12" cy="12" r="6"></circle>
+                <circle cx="12" cy="12" r="2"></circle>
+              </svg>
+            </div>
+            <div class="btn-text">
+              <span class="btn-main">🎯 จัดการเฉพาะรายการที่เลือก (<span id="targetedBtnCount">0</span>)</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
       <!-- Video Speed Section -->
       <div class="section-box">
         <div class="section-header">

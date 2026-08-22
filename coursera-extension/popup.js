@@ -193,6 +193,115 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // 5. Pending Items Inspector & Targeted Solve Handlers
+  const btnScanPending = document.getElementById('btnScanPending');
+  const pendingCountBadge = document.getElementById('pendingCountBadge');
+  const pendingListContainer = document.getElementById('pendingListContainer');
+  const pendingItemsScrollbox = document.getElementById('pendingItemsScrollbox');
+  const selectAllPending = document.getElementById('selectAllPending');
+  const selectedCountDisplay = document.getElementById('selectedCountDisplay');
+  const targetedBtnCount = document.getElementById('targetedBtnCount');
+  const btnTargetedSolve = document.getElementById('btnTargetedSolve');
+
+  let currentPendingList = [];
+
+  function updateSelectedPendingCounts() {
+    const checkboxes = pendingItemsScrollbox.querySelectorAll('.pending-item-checkbox');
+    const checked = Array.from(checkboxes).filter(cb => cb.checked);
+    const count = checked.length;
+    
+    if (selectedCountDisplay) selectedCountDisplay.innerText = `${count}/${checkboxes.length}`;
+    if (targetedBtnCount) targetedBtnCount.innerText = `${count}`;
+    if (selectAllPending) selectAllPending.checked = count === checkboxes.length && count > 0;
+    if (btnTargetedSolve) btnTargetedSolve.disabled = count === 0;
+  }
+
+  if (btnScanPending) {
+    btnScanPending.addEventListener('click', () => {
+      btnScanPending.disabled = true;
+      pendingCountBadge.innerText = 'Scanning...';
+      showActionStatus('🔍 กำลังสแกนหารายการที่ยังไม่เสร็จใน Module...', 'info');
+
+      sendMessageToActiveTab({ action: 'SCAN_PENDING_ITEMS' }, (res) => {
+        btnScanPending.disabled = false;
+        if (res && res.success && res.items) {
+          currentPendingList = res.items;
+          pendingCountBadge.innerText = `เหลือ ${res.items.length} รายการ`;
+          
+          if (res.items.length === 0) {
+            pendingListContainer.style.display = 'block';
+            pendingItemsScrollbox.innerHTML = '<div style="font-size: 11px; color: #34d399; text-align: center; padding: 10px;">🎉 ยอดเยี่ยม! เรียนและสอบผ่านครบทุกรายการแล้ว</div>';
+            if (btnTargetedSolve) btnTargetedSolve.style.display = 'none';
+            showActionStatus('🎉 ไม่พบรายการที่ค้าง ทำครบหมดแล้ว!', 'success');
+            return;
+          }
+
+          if (btnTargetedSolve) btnTargetedSolve.style.display = 'flex';
+          pendingListContainer.style.display = 'block';
+          pendingItemsScrollbox.innerHTML = '';
+
+          res.items.forEach((item, idx) => {
+            const row = document.createElement('div');
+            row.className = 'pending-item-row';
+            row.innerHTML = `
+              <label class="pending-checkbox-label">
+                <input type="checkbox" class="pending-item-checkbox" data-url="${item.url}" checked>
+                <span class="pending-type-tag type-${(item.type || 'quiz').toLowerCase()}">[${item.type}]</span>
+                <span class="pending-item-title" title="${item.title}">${item.title}</span>
+              </label>
+            `;
+            pendingItemsScrollbox.appendChild(row);
+          });
+
+          // Attach checkbox change listeners
+          pendingItemsScrollbox.querySelectorAll('.pending-item-checkbox').forEach(cb => {
+            cb.addEventListener('change', updateSelectedPendingCounts);
+          });
+
+          updateSelectedPendingCounts();
+          showActionStatus(`🔍 ตรวจพบ ${res.items.length} รายการที่ต้องทำ`, 'success');
+        } else {
+          pendingCountBadge.innerText = 'Error';
+          showActionStatus(res?.error || 'ไม่สามารถสแกนรายการได้ กรุณาเปิดหน้า Course Module', 'error');
+        }
+      });
+    });
+  }
+
+  if (selectAllPending) {
+    selectAllPending.addEventListener('change', () => {
+      const isChecked = selectAllPending.checked;
+      pendingItemsScrollbox.querySelectorAll('.pending-item-checkbox').forEach(cb => {
+        cb.checked = isChecked;
+      });
+      updateSelectedPendingCounts();
+    });
+  }
+
+  if (btnTargetedSolve) {
+    btnTargetedSolve.addEventListener('click', () => {
+      const checkboxes = pendingItemsScrollbox.querySelectorAll('.pending-item-checkbox:checked');
+      const selectedUrls = Array.from(checkboxes).map(cb => cb.getAttribute('data-url')).filter(Boolean);
+
+      if (selectedUrls.length === 0) {
+        showActionStatus('⚠️ กรุณาเลือกอย่างน้อย 1 รายการเพื่อดำเนินการ', 'error');
+        return;
+      }
+
+      btnTargetedSolve.disabled = true;
+      showActionStatus(`🎯 เริ่ม Auto-Pilot เฉพาะ ${selectedUrls.length} รายการที่เลือก...`, 'info');
+
+      sendMessageToActiveTab({ action: 'START_TARGETED_AUTOPILOT', urls: selectedUrls }, (res) => {
+        btnTargetedSolve.disabled = false;
+        if (res && res.success) {
+          showActionStatus(`🚀 กำลังนำทางไปทำ ${selectedUrls.length} รายการที่เลือก...`, 'success');
+        } else {
+          showActionStatus(res?.error || 'เกิดข้อผิดพลาดในการเริ่ม Targeted Auto-Pilot', 'error');
+        }
+      });
+    });
+  }
+
   btnSolveQuiz.addEventListener('click', async () => {
     if (!apiKeyInput.value.trim()) {
       showActionStatus('⚠️ กรุณาตั้งค่า Gemini API Key ในแท็บ "ตั้งค่า" ก่อน', 'error');
